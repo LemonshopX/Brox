@@ -21,6 +21,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service as ChromeService
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
+import threading, queue
 
 # --- การตั้งค่าไฟล์ ---
 CONFIG_FILE = "config_register.txt"
@@ -1216,6 +1217,88 @@ def reboot_router_via_ssh(config):
         print(f"❌ [Router] Failed to reboot router: {e}")
         return False
 
+def run_parallel_registration_mode(config, worker_count=10):
+    """โหมดใหม่: สมัครบัญชีจากไฟล์ accounts.txt แบบขนาน เปิดเบราว์เซอร์พร้อมกัน worker_count จอ"""
+    import threading, queue
+
+    if not os.path.exists(ACCOUNTS_FILE):
+        print(f"❌ '{ACCOUNTS_FILE}' not found. Please create it and add usernames.")
+        return
+
+    with open(ACCOUNTS_FILE, "r", encoding="utf-8") as f:
+        usernames = [line.strip() for line in f if line.strip()]
+
+    total_accounts = len(usernames)
+    if total_accounts == 0:
+        print("--- [Parallel Mode] No accounts in accounts.txt ---")
+        return
+
+    print(f"--- [Parallel Mode] Starting registration for {total_accounts} accounts with {worker_count} parallel workers ---")
+
+    q = queue.Queue()
+    for name in usernames:
+        q.put(name)
+
+    ok_count = 0
+    fail_count = 0
+    processed_count = 0
+    lock = threading.Lock()          # ป้องกันข้อมูลชนกันเวลาอัปเดตตัวนับ/เขียนไฟล์
+    reboot_lock = threading.Lock()   # ให้มีรีบูตเดียวในเวลาเดียวกัน
+    reboot_interval = int(config.get('SSH_REBOOT_AFTER_N', 10))
+
+    def worker(idx: int):
+        nonlocal ok_count, fail_count, processed_count
+        while True:
+            try:
+                username = q.get_nowait()
+            except queue.Empty:
+                break
+
+            password = generate_password()
+            print(f"[Worker-{idx}] ▶️ Processing {username}")
+            result = create_roblox_account(username, password, config)
+
+            with lock:
+                processed_count += 1
+                if result.get('status') == 'success':
+                    ok_count += 1
+                    log_success(result['username'], result['password'], result['cookies'])
+                else:
+                    fail_count += 1
+
+                should_reboot = reboot_interval > 0 and processed_count % reboot_interval == 0
+
+            if should_reboot:
+                with reboot_lock:
+                    # double-check หลังได้ล็อก เพื่อกันซ้ำ
+                    if processed_count % reboot_interval == 0:
+                        print(f"\n[Router] Triggering reboot after {processed_count} processed accounts...")
+                        reboot_router_via_ssh(config)
+
+            q.task_done()
+        print(f"[Worker-{idx}] Finished.")
+
+    threads = [threading.Thread(target=worker, args=(i+1,), daemon=True) for i in range(worker_count)]
+    for t in threads: t.start()
+    for t in threads: t.join()
+
+    # ลบรายชื่อที่ทำสำเร็จออกจากไฟล์ accounts.txt
+    try:
+        with open(ACCOUNTS_FILE, "w", encoding="utf-8") as f:
+            # ในโหมดขนานถือว่าประมวลผลทุกแถว ไม่เหลือค้าง
+            pass
+    except Exception as e:
+        print(f"⚠️ Could not update '{ACCOUNTS_FILE}': {e}")
+
+    print("\n" + "="*20)
+    print("   PARALLEL MODE SUMMARY")
+    print("="*20)
+    print(f"  Total Accounts: {total_accounts}")
+    print(f"  ✅ Success: {ok_count}")
+    print(f"  ❌ Failed: {fail_count}")
+    print("="*20)
+    print("--- Parallel registration finished ---")
+
 if __name__ == "__main__":
     config = load_config()
     if not config:
@@ -1226,10 +1309,11 @@ if __name__ == "__main__":
         print("  1: Register from file")
         print("  2: Log in & Update Cookie")
         print("  3: Interactive Register")
+        print("  4: Parallel Register")
         print("  q: Exit program")
         print("="*40)
         
-        choice = input("Select mode (1/2/3/q): ").strip()
+        choice = input("Select mode (1/2/3/4/q): ").strip()
         
         if choice == '1':
             run_registration_mode(config)
@@ -1240,6 +1324,9 @@ if __name__ == "__main__":
         elif choice == '3':
             run_interactive_registration_mode(config) 
             break    
+        elif choice == '4':
+            run_parallel_registration_mode(config)
+            break
         elif choice.lower() == 'q':
             print("Exiting program.")
             break
