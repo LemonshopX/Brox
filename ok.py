@@ -224,6 +224,14 @@ def load_config():
             f.write("Purchase_Random_Item=True") 
             f.write("Notifly_FavMap=True") 
             f.write("Join_Group=True")
+            f.write("\nROUTER_SSH_ENABLE=False")
+            f.write("\nROUTER_SSH_HOST=192.168.8.1")
+            f.write("\nROUTER_SSH_PORT=22")
+            f.write("\nROUTER_SSH_USER=root")
+            f.write("\nROUTER_SSH_PASSWORD=yourpassword")
+            f.write("\nROUTER_SSH_KEY_PATH=")
+            f.write("\nSSH_REBOOT_AFTER_N=10")
+            f.write("\nROUTER_WAIT_AFTER_REBOOT=60")
 
 
 
@@ -725,6 +733,12 @@ def run_registration_mode(config):
             }
             send_to_discord(webhook_url, fail_embed)
         
+        # --- NEW: รีบูตเราเตอร์ทุก ๆ N ไอดี ---
+        reboot_interval = int(config.get('SSH_REBOOT_AFTER_N', 10))
+        if reboot_interval > 0 and processed_count % reboot_interval == 0:
+            print(f"\n[Router] Triggering reboot after {processed_count} processed accounts...")
+            reboot_router_via_ssh(config)
+        
         # --- [ใหม่] เขียนไฟล์ accounts.txt ใหม่ด้วยรายชื่อที่เหลืออยู่ ---
         try:
             with open(ACCOUNTS_FILE, "w", encoding="utf-8") as f:
@@ -1118,6 +1132,12 @@ def run_interactive_registration_mode(config):
             print(f"🛑 {result['message']}. Halting all operations.")
             break
         
+        # --- NEW: รีบูตเราเตอร์ทุก ๆ N ไอดี ---
+        reboot_interval = int(config.get('SSH_REBOOT_AFTER_N', 10))
+        if reboot_interval > 0 and i % reboot_interval == 0:
+            print(f"\n[Router] Triggering reboot after {i} processed accounts...")
+            reboot_router_via_ssh(config)
+        
         print("--- Pausing for 5 seconds before next item ---")
         time.sleep(5)
         
@@ -1143,6 +1163,59 @@ def run_interactive_registration_mode(config):
     print(f"  ❌ Failed/Skipped: {fail_count}")
     print("="*20)
     print("\n--- [Mode 3] Interactive registration process finished ---")
+
+# --- NEW: สำหรับรีบูตเราเตอร์ผ่าน SSH ---
+
+def reboot_router_via_ssh(config):
+    """เชื่อมต่อเราเตอร์ผ่าน SSH และสั่ง reboot เพื่อรีไอพี
+
+    การตั้งค่าที่รองรับ (เพิ่มใน config_register.txt):
+        ROUTER_SSH_ENABLE=True/False   # เปิด/ปิดฟังก์ชันนี้ (ค่าเริ่ม False)
+        ROUTER_SSH_HOST=192.168.8.1    # IP เราเตอร์ (GL-XE300C4 ค่า default)
+        ROUTER_SSH_PORT=22             # พอร์ต SSH (ปกติ 22)
+        ROUTER_SSH_USER=root           # ชื่อผู้ใช้ (root)
+        ROUTER_SSH_PASSWORD=yourpass   # รหัสผ่าน (หรือปล่อยว่างถ้าใช้ key-file)
+        ROUTER_SSH_KEY_PATH=/path/to/key # (ทางเลือก) ไฟล์ private key
+        SSH_REBOOT_AFTER_N=10          # รีบูตหลังสร้างบัญชีทุก ๆ N ไอดี
+        ROUTER_WAIT_AFTER_REBOOT=60    # หน่วยวินาที สำหรับรอเราเตอร์กลับมา
+    """
+    if config.get('ROUTER_SSH_ENABLE', 'False').lower() != 'true':
+        return False  # ฟังก์ชันถูกปิดไว้
+
+    host = config.get('ROUTER_SSH_HOST')
+    user = config.get('ROUTER_SSH_USER', 'root')
+    port = int(config.get('ROUTER_SSH_PORT', 22))
+    password = config.get('ROUTER_SSH_PASSWORD')
+    key_path = config.get('ROUTER_SSH_KEY_PATH')
+
+    if not host:
+        print("⚠️ [Router] HOST not specified. Skipping reboot.")
+        return False
+
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    try:
+        if password:
+            ssh.connect(hostname=host, port=port, username=user, password=password, timeout=10)
+        elif key_path and os.path.exists(key_path):
+            pkey = paramiko.RSAKey.from_private_key_file(key_path)
+            ssh.connect(hostname=host, port=port, username=user, pkey=pkey, timeout=10)
+        else:
+            print("⚠️ [Router] Neither password nor key provided. Skipping reboot.")
+            return False
+
+        print(f"[Router] Connected to {host}. Sending reboot command ...")
+        ssh.exec_command("reboot &")
+        ssh.close()
+        wait_sec = int(config.get('ROUTER_WAIT_AFTER_REBOOT', 60))
+        print(f"[Router] Reboot command sent. Waiting {wait_sec} seconds for router to come back...")
+        time.sleep(wait_sec)
+        print("[Router] Wait complete. Continuing operations.")
+        return True
+    except Exception as e:
+        print(f"❌ [Router] Failed to reboot router: {e}")
+        return False
+
 if __name__ == "__main__":
     config = load_config()
     if not config:
