@@ -233,6 +233,7 @@ def load_config():
             f.write("\nROUTER_SSH_KEY_PATH=")
             f.write("\nSSH_REBOOT_AFTER_N=10")
             f.write("\nROUTER_WAIT_AFTER_REBOOT=60")
+            f.write("\nPARALLEL_WORKERS=5")
 
 
 
@@ -1220,6 +1221,7 @@ def reboot_router_via_ssh(config):
 def run_parallel_registration_mode(config, worker_count=10):
     """โหมดใหม่: สมัครบัญชีจากไฟล์ accounts.txt แบบขนาน เปิดเบราว์เซอร์พร้อมกัน worker_count จอ"""
     import threading, queue
+    worker_count = int(config.get('PARALLEL_WORKERS', worker_count))
 
     if not os.path.exists(ACCOUNTS_FILE):
         print(f"❌ '{ACCOUNTS_FILE}' not found. Please create it and add usernames.")
@@ -1299,6 +1301,87 @@ def run_parallel_registration_mode(config, worker_count=10):
     print("="*20)
     print("--- Parallel registration finished ---")
 
+def run_parallel_interactive_registration_mode(config):
+    """โหมดใหม่: Interactive Parallel Register (สุ่มชื่อ + ทำงานขนาน)"""
+    prefix = input("Please enter the username prefix (e.g., keyboard_): ").strip()
+    if not prefix:
+        print("❌ Prefix cannot be empty. Exiting mode.")
+        return
+
+    # จำนวนบัญชีที่ต้องสร้าง
+    while True:
+        try:
+            qty = int(input("How many accounts to create? (Max 100): ").strip())
+            if 1 <= qty <= 100:
+                break
+            else:
+                print("❌ Please enter a number between 1 and 100.")
+        except ValueError:
+            print("❌ Invalid number. Try again.")
+
+    # ผลรวมของเลขแบบไม่ซ้ำ
+    possible_numbers = list(range(1000, 10000))
+    random.shuffle(possible_numbers)
+    numbers_to_use = possible_numbers[:qty]
+
+    usernames = [f"{prefix}{num}" for num in numbers_to_use]
+
+    worker_count = int(config.get('PARALLEL_WORKERS', 5))
+    print(f"--- [Interactive Parallel] Starting with {qty} accounts using {worker_count} workers ---")
+
+    # ใช้ฟังก์ชัน parallel เดิม แต่ส่งผ่าน queue
+    import threading, queue
+    q = queue.Queue()
+    for name in usernames:
+        q.put(name)
+
+    ok_count = 0
+    fail_count = 0
+    processed_count = 0
+    lock = threading.Lock()
+    reboot_lock = threading.Lock()
+    reboot_interval = int(config.get('SSH_REBOOT_AFTER_N', 15))
+
+    def worker(idx:int):
+        nonlocal ok_count, fail_count, processed_count
+        while True:
+            try:
+                username = q.get_nowait()
+            except queue.Empty:
+                break
+            password = generate_password()
+            print(f"[Worker-{idx}] ▶️ Processing {username}")
+            result = create_roblox_account(username, password, config)
+
+            with lock:
+                processed_count += 1
+                if result.get('status') == 'success':
+                    ok_count += 1
+                    log_success(result['username'], result['password'], result['cookies'])
+                else:
+                    fail_count += 1
+                should_reboot = reboot_interval > 0 and processed_count % reboot_interval == 0
+            if should_reboot:
+                with reboot_lock:
+                    if processed_count % reboot_interval == 0:
+                        print(f"\n[Router] Triggering reboot after {processed_count} processed accounts...")
+                        reboot_router_via_ssh(config)
+            q.task_done()
+        print(f"[Worker-{idx}] Finished.")
+
+    threads = [threading.Thread(target=worker, args=(i+1,), daemon=True) for i in range(worker_count)]
+    for t in threads: t.start()
+    for t in threads: t.join()
+
+    print("\n" + "="*20)
+    print("  INTERACTIVE PARALLEL SUMMARY")
+    print("="*20)
+    print(f"  Total Accounts: {qty}")
+    print(f"  ✅ Success: {ok_count}")
+    print(f"  ❌ Failed: {fail_count}")
+    print("="*20)
+    print("--- Interactive Parallel finished ---")
+
 if __name__ == "__main__":
     config = load_config()
     if not config:
@@ -1310,10 +1393,11 @@ if __name__ == "__main__":
         print("  2: Log in & Update Cookie")
         print("  3: Interactive Register")
         print("  4: Parallel Register")
+        print("  5: Interactive Parallel Register")
         print("  q: Exit program")
         print("="*40)
         
-        choice = input("Select mode (1/2/3/4/q): ").strip()
+        choice = input("Select mode (1/2/3/4/5/q): ").strip()
         
         if choice == '1':
             run_registration_mode(config)
@@ -1326,6 +1410,9 @@ if __name__ == "__main__":
             break    
         elif choice == '4':
             run_parallel_registration_mode(config)
+            break
+        elif choice == '5':
+            run_parallel_interactive_registration_mode(config)
             break
         elif choice.lower() == 'q':
             print("Exiting program.")
