@@ -22,185 +22,6 @@ from selenium.webdriver.chrome.service import Service as ChromeService
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 
-# --- Router SSH Configuration (will be updated from config file) ---
-ROUTER_SSH_HOST = "192.168.8.1"  # Default GL.iNet router IP
-ROUTER_SSH_PORT = 22
-ROUTER_SSH_USERNAME = "root"  # Default GL.iNet username
-ROUTER_SSH_PRIVATE_KEY_PATH = os.path.expanduser("~/.ssh/id_rsa")  # Path to SSH private key
-ROUTER_REBOOT_COUNTER = 0  # Global counter for tracking when to reboot
-ROUTER_REBOOT_ENABLED = True  # Whether router reboot is enabled
-ROUTER_REBOOT_INTERVAL = 10  # How many accounts before reboot
-
-def setup_ssh_key_if_needed():
-    """Setup SSH key authentication for passwordless access to router"""
-    print("🔑 Setting up SSH key authentication...")
-    
-    # Check if SSH key exists
-    if not os.path.exists(ROUTER_SSH_PRIVATE_KEY_PATH):
-        print("📝 SSH private key not found. Generating new SSH key pair...")
-        try:
-            # Generate SSH key pair
-            os.system(f'ssh-keygen -t rsa -b 2048 -f {ROUTER_SSH_PRIVATE_KEY_PATH} -N ""')
-            print(f"✅ SSH key pair generated at {ROUTER_SSH_PRIVATE_KEY_PATH}")
-        except Exception as e:
-            print(f"❌ Failed to generate SSH key: {e}")
-            return False
-    
-    # Copy public key to router
-    public_key_path = f"{ROUTER_SSH_PRIVATE_KEY_PATH}.pub"
-    if os.path.exists(public_key_path):
-        print("📤 Copying public key to router...")
-        try:
-            # Read public key
-            with open(public_key_path, 'r') as f:
-                public_key = f.read().strip()
-            
-            # Connect to router and add public key
-            ssh = paramiko.SSHClient()
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            
-            # Try to connect with password first time to setup key
-            print("🔐 Please enter router password for initial setup:")
-            password = input("Router password (default is usually empty or 'goodlife'): ").strip()
-            if not password:
-                password = "goodlife"  # Common default for GL.iNet
-                
-            ssh.connect(ROUTER_SSH_HOST, port=ROUTER_SSH_PORT, username=ROUTER_SSH_USERNAME, password=password)
-            
-            # Create .ssh directory and authorized_keys
-            ssh.exec_command("mkdir -p ~/.ssh")
-            ssh.exec_command("chmod 700 ~/.ssh")
-            ssh.exec_command(f"echo '{public_key}' >> ~/.ssh/authorized_keys")
-            ssh.exec_command("chmod 600 ~/.ssh/authorized_keys")
-            
-            ssh.close()
-            print("✅ SSH key authentication setup completed!")
-            return True
-            
-        except Exception as e:
-            print(f"❌ Failed to setup SSH key authentication: {e}")
-            print("💡 You may need to setup the router manually or check the IP address")
-            return False
-    
-    return True
-
-def reboot_router_via_ssh():
-    """Reboot GL.iNet router via SSH to get new IP address"""
-    global ROUTER_REBOOT_COUNTER
-    
-    print(f"🔄 Initiating router reboot via SSH (Host: {ROUTER_SSH_HOST})...")
-    
-    try:
-        # Create SSH client
-        ssh = paramiko.SSHClient()
-        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        
-        # Connect using private key
-        private_key = paramiko.RSAKey.from_private_key_file(ROUTER_SSH_PRIVATE_KEY_PATH)
-        ssh.connect(
-            hostname=ROUTER_SSH_HOST,
-            port=ROUTER_SSH_PORT,
-            username=ROUTER_SSH_USERNAME,
-            pkey=private_key,
-            timeout=10
-        )
-        
-        print("✅ SSH connection established successfully")
-        
-        # Execute reboot command
-        stdin, stdout, stderr = ssh.exec_command("reboot")
-        
-        # Wait a moment for command to execute
-        time.sleep(2)
-        
-        ssh.close()
-        print("🚀 Router reboot command sent successfully!")
-        
-        # Wait for router to reboot and come back online
-        print("⏳ Waiting for router to reboot (60 seconds)...")
-        time.sleep(60)
-        
-        # Wait for router to be accessible again
-        print("🔍 Checking if router is back online...")
-        max_wait_attempts = 30  # 30 attempts * 2 seconds = 60 seconds max wait
-        for attempt in range(max_wait_attempts):
-            try:
-                test_ssh = paramiko.SSHClient()
-                test_ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-                test_ssh.connect(
-                    hostname=ROUTER_SSH_HOST,
-                    port=ROUTER_SSH_PORT,
-                    username=ROUTER_SSH_USERNAME,
-                    pkey=private_key,
-                    timeout=5
-                )
-                test_ssh.close()
-                print("✅ Router is back online and accessible!")
-                break
-            except:
-                print(f"⏳ Attempt {attempt + 1}/{max_wait_attempts} - Router not ready yet...")
-                time.sleep(2)
-        else:
-            print("⚠️ Router may not be fully ready yet, continuing anyway...")
-        
-        # Check new IP address
-        print("🌐 Checking new IP address...")
-        try:
-            response = requests.get("http://httpbin.org/ip", timeout=10)
-            if response.status_code == 200:
-                new_ip = response.json().get('origin', 'Unknown')
-                print(f"🎯 New IP Address: {new_ip}")
-            else:
-                print("⚠️ Could not verify new IP address")
-        except:
-            print("⚠️ Could not check IP address")
-        
-        ROUTER_REBOOT_COUNTER = 0  # Reset counter
-        return True
-        
-    except paramiko.AuthenticationException:
-        print("❌ SSH authentication failed! Please run setup_ssh_key_if_needed() first")
-        return False
-    except paramiko.SSHException as e:
-        print(f"❌ SSH connection error: {e}")
-        return False
-    except Exception as e:
-        print(f"❌ Router reboot failed: {e}")
-        return False
-
-def update_router_config_from_file(config):
-    """Update router configuration from config file"""
-    global ROUTER_SSH_HOST, ROUTER_SSH_PORT, ROUTER_SSH_USERNAME, ROUTER_REBOOT_ENABLED, ROUTER_REBOOT_INTERVAL
-    
-    ROUTER_SSH_HOST = config.get('ROUTER_SSH_HOST', '192.168.8.1')
-    ROUTER_SSH_PORT = int(config.get('ROUTER_SSH_PORT', 22))
-    ROUTER_SSH_USERNAME = config.get('ROUTER_SSH_USERNAME', 'root')
-    ROUTER_REBOOT_ENABLED = config.get('ROUTER_REBOOT_ENABLED', 'True').lower() == 'true'
-    ROUTER_REBOOT_INTERVAL = int(config.get('ROUTER_REBOOT_INTERVAL', 10))
-    
-    print(f"🔧 Router Config: {ROUTER_SSH_HOST}:{ROUTER_SSH_PORT} (Reboot every {ROUTER_REBOOT_INTERVAL} accounts)")
-
-def check_and_reboot_if_needed():
-    """Check if router reboot is needed (based on config interval) and execute if necessary"""
-    global ROUTER_REBOOT_COUNTER
-    
-    if not ROUTER_REBOOT_ENABLED:
-        return True
-    
-    ROUTER_REBOOT_COUNTER += 1
-    print(f"📊 Account counter: {ROUTER_REBOOT_COUNTER}/{ROUTER_REBOOT_INTERVAL}")
-    
-    if ROUTER_REBOOT_COUNTER >= ROUTER_REBOOT_INTERVAL:
-        print(f"🔄 Reached {ROUTER_REBOOT_INTERVAL} accounts! Time to reboot router for new IP...")
-        success = reboot_router_via_ssh()
-        if success:
-            print("✅ Router reboot completed successfully!")
-        else:
-            print("❌ Router reboot failed, continuing with current IP...")
-        return success
-    
-    return True
-
 # --- การตั้งค่าไฟล์ ---
 CONFIG_FILE = "config_register.txt"
 ACCOUNTS_FILE = "accounts.txt"
@@ -397,19 +218,12 @@ def load_config():
             f.write("EXTENSION_PATH=C:\\path\\to\\your\\extension_folder\n")
             f.write("ITEM_URLS=https://www.roblox.com/catalog/item1,https://www.roblox.com/catalog/item2\n") # เพิ่มตัวอย่าง
             f.write("RESTART_BUTTON_IMAGE_PATH=C:\\path\\to\\your\\restart_button.png\n") 
-            f.write("Change_Display_name=True\n") # เพิ่มตัวอย่าง
-            f.write("Change_About_me=True\n")            
-            f.write("Add_Email=True\n")
-            f.write("Purchase_Random_Item=True\n") 
-            f.write("Notifly_FavMap=True\n") 
-            f.write("Join_Group=True\n")
-            f.write("DISCORD_WEBHOOK_URL=\n")
-            f.write("# Router SSH Configuration for GL.iNet GL-XE300C4\n")
-            f.write("ROUTER_SSH_HOST=192.168.8.1\n")
-            f.write("ROUTER_SSH_PORT=22\n")
-            f.write("ROUTER_SSH_USERNAME=root\n")
-            f.write("ROUTER_REBOOT_ENABLED=True\n")
-            f.write("ROUTER_REBOOT_INTERVAL=10\n")
+            f.write("Change_Display_name=True") # เพิ่มตัวอย่าง
+            f.write("Change_About_me=True")            
+            f.write("Add_Email=True")
+            f.write("Purchase_Random_Item=True") 
+            f.write("Notifly_FavMap=True") 
+            f.write("Join_Group=True")
 
 
 
@@ -885,10 +699,6 @@ def run_registration_mode(config):
             ok_count += 1
             if log_success(result['username'], result['password'], result['cookies']):
                 print(f"✔️ Successfully saved result for {result['username']} to {SUCCESS_FILE}")
-                
-                # --- [ใหม่] เช็คและรีบูตเร้าเตอร์ทุก 10 ไอดี ---
-                check_and_reboot_if_needed()
-                
                 success_embed = {
                     "title": f"✅ Registration Successful ({processed_count}/{total_accounts_initial})",
                     "color": 3066993,
@@ -1169,9 +979,6 @@ def run_login_and_update_cookie_mode(config):
                 ok_count += 1
                 if log_success(username, password, new_cookies):
                     print(f"✔️ Successfully saved result for {username} to {SUCCESS_FILE}")
-                    
-                    # --- [ใหม่] เช็คและรีบูตเร้าเตอร์ทุก 10 ไอดี ---
-                    check_and_reboot_if_needed()
 
                     # --- [ใหม่] ส่ง Webhook เมื่อสำเร็จ ---
                     success_embed = {
@@ -1274,10 +1081,6 @@ def run_interactive_registration_mode(config):
             ok_count += 1
             if log_success(result['username'], result['password'], result['cookies']):
                 print(f"✔️ Successfully saved result for {result['username']} to {SUCCESS_FILE}")
-                
-                # --- [ใหม่] เช็คและรีบูตเร้าเตอร์ทุก 10 ไอดี ---
-                check_and_reboot_if_needed()
-                
                 # --- [ใหม่] ส่ง Webhook เมื่อสำเร็จ ---
                 success_embed = {
                     "title": f"✅ Registration Successful ({i}/{total_accounts})",
@@ -1344,42 +1147,16 @@ if __name__ == "__main__":
     config = load_config()
     if not config:
         exit()
-        
-    # --- [ใหม่] Update Router Configuration ---
-    update_router_config_from_file(config)
-    
-    # --- [ใหม่] SSH Router Setup Check ---
-    print("\n🔧 SSH Router Reboot System for GL.iNet GL-XE300C4")
-    print(f"This system will automatically reboot your router every {ROUTER_REBOOT_INTERVAL} successful accounts to get new IP addresses.")
-    
-    if ROUTER_REBOOT_ENABLED:
-        if not os.path.exists(ROUTER_SSH_PRIVATE_KEY_PATH):
-            print(f"\n🔑 SSH key not found at {ROUTER_SSH_PRIVATE_KEY_PATH}")
-            setup_choice = input("Would you like to setup SSH key authentication now? (y/n): ").strip().lower()
-            if setup_choice == 'y':
-                if setup_ssh_key_if_needed():
-                    print("✅ SSH setup completed! Router reboot will work automatically.")
-                else:
-                    print("❌ SSH setup failed. Router reboot may not work.")
-            else:
-                print("⚠️ Skipping SSH setup. You can run setup later by selecting option 's' from main menu.")
-        else:
-            print("✅ SSH key found. Router reboot system is ready!")
-    else:
-        print("⚠️ Router reboot is disabled in config. Set ROUTER_REBOOT_ENABLED=True to enable.")
-    
     while True:
         print("\n" + "="*40)
         print("Please select an operation mode:")
         print("  1: Register from file")
         print("  2: Log in & Update Cookie")
         print("  3: Interactive Register")
-        print("  s: Setup SSH Router Authentication")
-        print("  t: Test Router SSH Connection")
         print("  q: Exit program")
         print("="*40)
         
-        choice = input("Select mode (1/2/3/s/t/q): ").strip()
+        choice = input("Select mode (1/2/3/q): ").strip()
         
         if choice == '1':
             run_registration_mode(config)
@@ -1389,34 +1166,7 @@ if __name__ == "__main__":
             break
         elif choice == '3':
             run_interactive_registration_mode(config) 
-            break
-        elif choice.lower() == 's':
-            print("\n🔧 Setting up SSH Router Authentication...")
-            if setup_ssh_key_if_needed():
-                print("✅ SSH setup completed successfully!")
-            else:
-                print("❌ SSH setup failed!")
-        elif choice.lower() == 't':
-            print("\n🧪 Testing SSH connection to router...")
-            try:
-                ssh = paramiko.SSHClient()
-                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-                private_key = paramiko.RSAKey.from_private_key_file(ROUTER_SSH_PRIVATE_KEY_PATH)
-                ssh.connect(
-                    hostname=ROUTER_SSH_HOST,
-                    port=ROUTER_SSH_PORT,
-                    username=ROUTER_SSH_USERNAME,
-                    pkey=private_key,
-                    timeout=10
-                )
-                stdin, stdout, stderr = ssh.exec_command("uptime")
-                uptime_output = stdout.read().decode().strip()
-                ssh.close()
-                print(f"✅ SSH connection successful!")
-                print(f"📊 Router uptime: {uptime_output}")
-            except Exception as e:
-                print(f"❌ SSH connection failed: {e}")
-                print("💡 Please run 'Setup SSH Router Authentication' first")
+            break    
         elif choice.lower() == 'q':
             print("Exiting program.")
             break
