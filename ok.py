@@ -1382,6 +1382,81 @@ def run_parallel_interactive_registration_mode(config):
     print("="*20)
     print("--- Interactive Parallel finished ---")
 
+def run_parallel_batch_registration_mode(config):
+    """โหมดใหม่: สมัครบัญชีแบบขนานเป็นรอบ ๆ (batch) แล้วรีบูตหลังจบแต่ละรอบ"""
+    worker_count = int(config.get('PARALLEL_WORKERS', 5))
+    if worker_count < 1:
+        worker_count = 1
+    if not os.path.exists(ACCOUNTS_FILE):
+        print(f"❌ '{ACCOUNTS_FILE}' not found. Please create it and add usernames.")
+        return
+
+    with open(ACCOUNTS_FILE, "r", encoding="utf-8") as f:
+        usernames = [line.strip() for line in f if line.strip()]
+
+    total_accounts = len(usernames)
+    if total_accounts == 0:
+        print("--- [Batch Parallel Mode] No accounts in accounts.txt ---")
+        return
+
+    print(f"--- [Batch Parallel Mode] Starting registration for {total_accounts} accounts in batches of {worker_count} ---")
+
+    import threading
+    ok_count = 0
+    fail_count = 0
+    processed_count = 0
+    lock = threading.Lock()
+
+    index = 0
+    while index < total_accounts:
+        batch = usernames[index:index + worker_count]
+        if not batch:
+            break
+
+        threads = []
+        def register_user(user):
+            nonlocal ok_count, fail_count, processed_count
+            password = generate_password()
+            print(f"[Batch] ▶️ Processing {user}")
+            result = create_roblox_account(user, password, config)
+            with lock:
+                processed_count += 1
+                if result.get('status') == 'success':
+                    ok_count += 1
+                    log_success(result['username'], result['password'], result['cookies'])
+                else:
+                    fail_count += 1
+
+        for user in batch:
+            t = threading.Thread(target=register_user, args=(user,), daemon=True)
+            t.start()
+            threads.append(t)
+        for t in threads:
+            t.join()
+
+        index += len(batch)
+        print(f"--- Batch completed ({index}/{total_accounts}) accounts processed ---")
+
+        # รีบูตหลังจบรอบถ้ายังมีบัญชีเหลือให้ทำ
+        if index < total_accounts and config.get('ROUTER_SSH_ENABLE', 'False').lower() == 'true':
+            reboot_router_via_ssh(config)
+
+    # เคลียร์ accounts.txt
+    try:
+        with open(ACCOUNTS_FILE, "w", encoding="utf-8") as f:
+            pass
+    except Exception as e:
+        print(f"⚠️ Could not update '{ACCOUNTS_FILE}': {e}")
+
+    print("\n" + "="*20)
+    print("  BATCH PARALLEL SUMMARY")
+    print("="*20)
+    print(f"  Total Accounts: {total_accounts}")
+    print(f"  ✅ Success: {ok_count}")
+    print(f"  ❌ Failed: {fail_count}")
+    print("="*20)
+    print("--- Batch Parallel registration finished ---")
+
 if __name__ == "__main__":
     config = load_config()
     if not config:
@@ -1394,10 +1469,11 @@ if __name__ == "__main__":
         print("  3: Interactive Register")
         print("  4: Parallel Register")
         print("  5: Interactive Parallel Register")
+        print("  6: Batch Parallel Register")
         print("  q: Exit program")
         print("="*40)
         
-        choice = input("Select mode (1/2/3/4/5/q): ").strip()
+        choice = input("Select mode (1/2/3/4/5/6/q): ").strip()
         
         if choice == '1':
             run_registration_mode(config)
@@ -1413,6 +1489,9 @@ if __name__ == "__main__":
             break
         elif choice == '5':
             run_parallel_interactive_registration_mode(config)
+            break
+        elif choice == '6':
+            run_parallel_batch_registration_mode(config)
             break
         elif choice.lower() == 'q':
             print("Exiting program.")
