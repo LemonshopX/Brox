@@ -1588,6 +1588,73 @@ def run_parallel_fixed10_mode(config):
     print("\n=== FIXED10 SUMMARY ===")
     print(f"Total: {total_accounts} | Success: {ok_count} | Failed: {fail_count}")
 
+def run_fixed10_interactive_mode(config):
+    """Interactive Fixed10: ให้ผู้ใช้ใส่ prefix + จำนวน แล้วสมัครเป็นชุด ชุดละ 10 จอ รีบูตหลังแต่ละชุด"""
+    worker_count = 10  # เปิดพร้อมกัน 10 จอเสมอ
+
+    prefix = input("Please enter the username prefix (e.g., gml_): ").strip()
+    if not prefix:
+        print("❌ Prefix cannot be empty. Exiting mode.")
+        return
+
+    # จำนวนที่ต้องการสร้าง
+    while True:
+        try:
+            total_qty = int(input("How many accounts to create? (Max 200): ").strip())
+            if 1 <= total_qty <= 200:
+                break
+            else:
+                print("❌ Enter number between 1 and 200.")
+        except ValueError:
+            print("❌ Invalid number. Try again.")
+
+    # สร้างเลขไม่ซ้ำให้ username
+    possible_numbers = list(range(1000, 10000))
+    random.shuffle(possible_numbers)
+    numbers_to_use = possible_numbers[:total_qty]
+    usernames = [f"{prefix}{n}" for n in numbers_to_use]
+
+    import threading
+    ok_count = fail_count = processed = 0
+    idx = 0
+    lock = threading.Lock()
+
+    print(f"--- [Fixed10 Interactive] Starting with {total_qty} accounts, batches of 10 ---")
+
+    while idx < total_qty:
+        batch = usernames[idx: idx + worker_count]
+        threads = []
+
+        def task(user):
+            nonlocal ok_count, fail_count, processed
+            password = generate_password()
+            print(f"[Fixed10] ▶️ {user}")
+            result = create_roblox_account(user, password, config)
+            with lock:
+                processed += 1
+                if result.get('status') == 'success':
+                    ok_count += 1
+                    log_success(result['username'], result['password'], result['cookies'])
+                else:
+                    fail_count += 1
+
+        for u in batch:
+            t = threading.Thread(target=task, args=(u,), daemon=True)
+            t.start()
+            threads.append(t)
+        for t in threads:
+            t.join()
+
+        idx += len(batch)
+        print(f"--- Batch completed ({idx}/{total_qty}) ---")
+
+        if idx < total_qty:
+            print("[Fixed10] Rebooting router before next batch...")
+            reboot_router_via_ssh(config)
+
+    print("\n=== FIXED10 INTERACTIVE SUMMARY ===")
+    print(f"Total: {total_qty} | Success: {ok_count} | Failed: {fail_count}")
+
 if __name__ == "__main__":
     config = load_config()
     if not config:
@@ -1603,10 +1670,11 @@ if __name__ == "__main__":
         print("  6: Batch Parallel Register")
         print("  7: Custom Parallel Register")
         print("  8: Fixed10 Mode")
+        print("  9: Fixed10 Interactive Mode")
         print("  q: Exit program")
         print("="*40)
         
-        choice = input("Select mode (1/2/3/4/5/6/7/8/q): ").strip()
+        choice = input("Select mode (1/2/3/4/5/6/7/8/9/q): ").strip()
         
         if choice == '1':
             run_registration_mode(config)
@@ -1631,6 +1699,9 @@ if __name__ == "__main__":
             break
         elif choice == '8':
             run_parallel_fixed10_mode(config)
+            break
+        elif choice == '9':
+            run_fixed10_interactive_mode(config)
             break
         elif choice.lower() == 'q':
             print("Exiting program.")
