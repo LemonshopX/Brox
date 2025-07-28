@@ -1457,6 +1457,76 @@ def run_parallel_batch_registration_mode(config):
     print("="*20)
     print("--- Batch Parallel registration finished ---")
 
+def run_parallel_custom_names_mode(config):
+    """โหมดใหม่: ผู้ใช้ป้อน Username แบบกำหนดเอง แล้วสมัครแบบขนาน"""
+    raw_input = input("Enter usernames separated by space or comma: ").strip()
+    if not raw_input:
+        print("❌ No usernames provided. Exiting mode.")
+        return
+    # แยกชื่อ
+    separators = [',', ' ', '\n', '\t']
+    for sep in separators:
+        raw_input = raw_input.replace(sep, ',')
+    usernames = [u.strip() for u in raw_input.split(',') if u.strip()]
+    if not usernames:
+        print("❌ Could not parse any valid usernames.")
+        return
+
+    worker_count = int(config.get('PARALLEL_WORKERS', 5))
+    reboot_interval = int(config.get('SSH_REBOOT_AFTER_N', 15))
+
+    print(f"--- [Custom Parallel] Starting with {len(usernames)} usernames using {worker_count} workers ---")
+
+    import threading, queue
+    q = queue.Queue()
+    for name in usernames:
+        q.put(name)
+
+    ok_count = 0
+    fail_count = 0
+    processed_count = 0
+    lock = threading.Lock()
+    reboot_lock = threading.Lock()
+
+    def worker(idx:int):
+        nonlocal ok_count, fail_count, processed_count
+        while True:
+            try:
+                username = q.get_nowait()
+            except queue.Empty:
+                break
+            password = generate_password()
+            print(f"[Worker-{idx}] ▶️ Processing {username}")
+            result = create_roblox_account(username, password, config)
+            with lock:
+                processed_count += 1
+                if result.get('status') == 'success':
+                    ok_count += 1
+                    log_success(result['username'], result['password'], result['cookies'])
+                else:
+                    fail_count += 1
+                need_reboot = reboot_interval > 0 and processed_count % reboot_interval == 0
+            if need_reboot:
+                with reboot_lock:
+                    if processed_count % reboot_interval == 0:
+                        print(f"\n[Router] Triggering reboot after {processed_count} processed accounts...")
+                        reboot_router_via_ssh(config)
+            q.task_done()
+        print(f"[Worker-{idx}] Finished.")
+
+    threads = [threading.Thread(target=worker, args=(i+1,), daemon=True) for i in range(worker_count)]
+    for t in threads: t.start()
+    for t in threads: t.join()
+
+    print("\n" + "="*20)
+    print("  CUSTOM PARALLEL SUMMARY")
+    print("="*20)
+    print(f"  Total Accounts: {len(usernames)}")
+    print(f"  ✅ Success: {ok_count}")
+    print(f"  ❌ Failed: {fail_count}")
+    print("="*20)
+    print("--- Custom Parallel finished ---")
+
 if __name__ == "__main__":
     config = load_config()
     if not config:
@@ -1470,10 +1540,11 @@ if __name__ == "__main__":
         print("  4: Parallel Register")
         print("  5: Interactive Parallel Register")
         print("  6: Batch Parallel Register")
+        print("  7: Custom Parallel Register")
         print("  q: Exit program")
         print("="*40)
         
-        choice = input("Select mode (1/2/3/4/5/6/q): ").strip()
+        choice = input("Select mode (1/2/3/4/5/6/7/q): ").strip()
         
         if choice == '1':
             run_registration_mode(config)
@@ -1492,6 +1563,9 @@ if __name__ == "__main__":
             break
         elif choice == '6':
             run_parallel_batch_registration_mode(config)
+            break
+        elif choice == '7':
+            run_parallel_custom_names_mode(config)
             break
         elif choice.lower() == 'q':
             print("Exiting program.")
