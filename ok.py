@@ -234,6 +234,9 @@ def load_config():
             f.write("\nSSH_REBOOT_AFTER_N=10")
             f.write("\nROUTER_WAIT_AFTER_REBOOT=100")
             f.write("\nPARALLEL_WORKERS=5")
+            f.write("\nCAPTCHA_TIMEOUT_SEC=300")
+            f.write("\nINTERNET_CHECK_TIMEOUT=300")
+            f.write("\nGLOBAL_TIMEOUT_SEC=600")
 
 
 
@@ -1642,21 +1645,28 @@ def run_fixed10_interactive_mode(config):
             t = threading.Thread(target=task, args=(u,), daemon=True)
             t.start()
             threads.append(t)
-        for t in threads:
-            t.join()
-
-        # --- NEW: Timeout & Network check ---
-        cap_timeout = int(config.get('CAPTCHA_TIMEOUT_SEC', 300))
+        # --- NEW: wait for all threads but respect GLOBAL_TIMEOUT_SEC ---
+        global_timeout = int(config.get('GLOBAL_TIMEOUT_SEC', 600))
+        start_wait = time.time()
+        while True:
+            alive = [t for t in threads if t.is_alive()]
+            if not alive:
+                break  # ทุก thread เสร็จสิ้น
+            if time.time() - start_wait > global_timeout:
+                print(f"⚠️ GLOBAL TIMEOUT {global_timeout}s reached. Killing Chrome & rebooting...")
+                kill_all_chrome_processes()
+                prev_ip = get_public_ip()
+                reboot_router_via_ssh(config)
+                wait_for_ip_change(prev_ip, timeout=int(config.get('INTERNET_CHECK_TIMEOUT', 300)))
+                # เริ่ม batch นี้ใหม่
+                break
+            time.sleep(3)
+        # หากยังมี thread ค้าง (จาก timeout) ให้ทำซ้ำ batch เดิม
         if any(t.is_alive() for t in threads):
-            print(f"⚠️ Timeout {cap_timeout}s reached. Killing Chrome & rebooting...")
-            kill_all_chrome_processes()
-            prev_ip = get_public_ip()
-            reboot_router_via_ssh(config)
-            wait_for_ip_change(prev_ip, timeout=int(config.get('INTERNET_CHECK_TIMEOUT', 300)))
             continue
         # --- END NEW ---
-        idx += len(batch)
 
+        idx += len(batch)
         print(f"--- Batch completed ({idx}/{total_qty}) ---")
 
         if idx < total_qty:
