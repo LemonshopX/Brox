@@ -284,6 +284,7 @@ def perform_post_login_actions(driver, username,password, config):
     # 3. วนลูปเข้ากลุ่มทั้งหมด
     if config['Purchase_Random_Item'] == "True":
         purchase_random_item(driver, username, config)
+        dress_up_after_purchase(driver, username)
         # 4. วนลูปกดถูกใจ/ดาว/กระดิ่ง ทั้งหมด
     if config['Notifly_FavMap'] == "True":
         for i, game_url in enumerate(config['GAME_URLS'], 1):
@@ -1143,6 +1144,40 @@ def run_interactive_registration_mode(config):
     print(f"  ❌ Failed/Skipped: {fail_count}")
     print("="*20)
     print("\n--- [Mode 3] Interactive registration process finished ---")
+
+def dress_up_after_purchase(driver, username):
+    """ฟังก์ชันสำหรับแต่งตัว/สวมใส่ไอเท็มล่าสุดที่เพิ่งซื้อ (ฟรี)"""
+    try:
+        print(f"[{username}] ...Attempting to dress up with the latest purchased item...")
+        # ไปที่หน้า Avatar
+        driver.get("https://www.roblox.com/my/avatar")
+        time.sleep(5)
+        # พยายามคลิกปุ่ม 'Recent' เพื่อแสดงไอเท็มล่าสุด
+        try:
+            recent_tab = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Recent')]"))
+            )
+            recent_tab.click()
+            print(f"[{username}] ...Clicked 'Recent' tab.")
+            time.sleep(2)
+        except Exception:
+            print(f"[{username}] ...Could not click 'Recent' tab. Trying to continue...")
+        # พยายามหาไอเท็มชิ้นแรก (ล่าสุด) และคลิกเพื่อสวมใส่
+        try:
+            first_item = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, ".recent-items .item-card-container, .recent-items .avatar-asset-item"))
+            )
+            first_item.click()
+            print(f"[{username}] ...Clicked to wear the most recent item.")
+            time.sleep(2)
+        except Exception:
+            print(f"[{username}] ...Could not find or click the most recent item.")
+        # รอให้ Avatar อัปเดต
+        time.sleep(3)
+        print(f"[{username}] ...Dress up process finished.")
+    except Exception as e:
+        print(f"[{username}] ...⚠️ Could not dress up. Error: {e}")
+
 if __name__ == "__main__":
     config = load_config()
     if not config:
