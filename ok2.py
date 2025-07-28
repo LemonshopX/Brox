@@ -1,0 +1,1765 @@
+import time
+import string
+import requests
+import imaplib
+import email
+from bs4 import BeautifulSoup
+import json
+import os
+import pyautogui
+import sys
+#import undetected_chromedriver as uc
+import random
+import calendar
+import re
+import paramiko
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service as ChromeService
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
+import threading, queue
+
+# --- การตั้งค่าไฟล์ ---
+CONFIG_FILE = "config_register.txt"
+ACCOUNTS_FILE = "accounts.txt"
+COOKIE_FILE = "cookie_join.txt"
+SUCCESS_FILE = "account_ok.txt"
+DISPLAY_NAMES_FILE = "DISPLAY_NAMES.txt"
+ABOUT_ME_FILE = "ABOUT_ME_TEXTS.txt"
+
+# --- [ใหม่] ลิสต์ชื่อสำหรับสุ่ม ---
+DISPLAY_NAMES = [
+    "SupraMK4", "GTR_R34", "RX7_SpiritR", "LancerEvoIX", "ImprezaWRX",
+    "MonkeyDLuffy", "RoronoaZoro", "SaitamaSensei", "GojoSatoru", "LeviAckerman",
+    "UzumakiNaruto", "SonGokuKakarot", "LightYagami", "ErenYeager", "TakumiFujiwara",
+    "InitialD_Rider", "WanganGhost", "AkumaNoZetto", "VinsmokeSanji"
+]
+ABOUT_ME_TEXTS = [
+    "Gaminglab On Top", "I love Thailand!", "Thailand is a beautiful country.",
+    "ผมรักประเทศไทย", "ประเทศไทยสวยงามมาก", "Made in Thailand"
+]
+
+
+# ... (ฟังก์ชันอื่นๆ ทั้งหมดที่เราเคยทำกันมา เช่น load_config, generate_password, perform_post_login_actions ฯลฯ ควรอยู่ที่นี่) ...
+# --- [ใหม่] ฟังก์ชันสำหรับอ่านอีเมล ---
+def generate_random_string(length=8):
+    """สร้างตัวอักษรและตัวเลขต่อท้ายแบบสุ่ม"""
+    chars = string.ascii_lowercase + string.digits
+    return ''.join(random.choice(chars) for _ in range(length))
+
+
+def generate_random_suffix(length=2):
+    """สร้างตัวอักษรต่อท้ายแบบสุ่ม a-z, A-Z"""
+    return ''.join(random.choice(string.ascii_letters) for _ in range(length))
+def send_to_discord(webhook_url, embed_data):
+    """ส่งข้อมูลแบบ Embed ไปยัง Discord Webhook"""
+    if not webhook_url:
+        return # ถ้าไม่ได้ตั้งค่า webhook URL ไว้ ก็ไม่ต้องทำอะไร
+
+    headers = {"Content-Type": "application/json"}
+    payload = {"embeds": [embed_data]}
+
+    try:
+        response = requests.post(webhook_url, data=json.dumps(payload), headers=headers)
+        if response.status_code not in [200, 204]:
+            print(f"⚠️ Discord Webhook Error: Received status code {response.status_code}")
+    except Exception as e:
+        print(f"⚠️ Failed to send message to Discord: {e}")
+def load_list_from_file(filename, default_values=None):
+    """อ่านข้อมูลจากไฟล์ txt บรรทัดละ 1 รายการ"""
+    if default_values is None:
+        default_values = []
+    if not os.path.exists(filename):
+        print(f"File '{filename}' not found. Creating a sample file.")
+        with open(filename, "w", encoding="utf-8") as f:
+            for value in default_values:
+                f.write(f"{value}\n")
+        return default_values
+    
+    with open(filename, "r", encoding="utf-8") as f:
+        # อ่านไฟล์, ตัดช่องว่าง, และกรองบรรทัดที่ว่างเปล่าออก
+        lines = [line.strip() for line in f if line.strip()]
+        return lines
+
+# --- [ใหม่] โหลดข้อมูลจากไฟล์มาเก็บในตัวแปร ---
+DISPLAY_NAMES = load_list_from_file(DISPLAY_NAMES_FILE, default_values=["SupraMK4","Sanji","UzumakiNaruto", "SonGokuKakarot"])
+ABOUT_ME_TEXTS = load_list_from_file(ABOUT_ME_FILE, default_values=["Gaminglab On Top", "I love Thailand!"])
+AVAILABLE_EMAILS = load_list_from_file("email.txt", default_values=[])
+print(f"--- Found {len(AVAILABLE_EMAILS)} emails in email.txt ---")
+def add_email_to_account(driver, username):
+    """
+    ฟังก์ชันสำหรับเพิ่มอีเมล พร้อมระบบลองใหม่ 3 ครั้งด้วยอีเมลใหม่ที่สุ่มขึ้น
+    """
+    if config.get('Add_Email', 'false').lower() != 'true':
+        return None, True # ถ้าปิดฟังก์ชันนี้ ให้ถือว่าสำเร็จ
+
+    email_file = "email.txt"
+    original_email_to_try = None
+    remaining_emails = []
+
+    # --- 1. อ่านและเตรียมอีเมลจากไฟล์ ---
+    try:
+        if not os.path.exists(email_file) or os.path.getsize(email_file) == 0:
+            print(f"[{username}] ...'email.txt' not found or is empty. Skipping email add.")
+            return None, True # ข้ามไป ถือว่าไม่ล้มเหลว
+        
+        with open(email_file, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        
+        if not lines:
+            print(f"[{username}] ...No emails left in email.txt. Skipping email add.")
+            return None, True # ข้ามไป ถือว่าไม่ล้มเหลว
+
+        original_email_to_try = lines[0].strip()
+        remaining_emails = lines[1:]
+
+    except Exception as e:
+        print(f"[{username}] ...⚠️ Error reading email.txt: {e}")
+        return None, False
+
+    # --- 2. เริ่มกระบวนการเพิ่มอีเมล ---
+    max_retries = 3
+    for attempt in range(max_retries + 1): # +1 คือครั้งแรกที่ใช้ original_email
+        email_to_use = ""
+        if attempt == 0:
+            email_to_use = original_email_to_try
+        else:
+            # สร้างอีเมลใหม่สำหรับการลองครั้งถัดไป
+            email_prefix = generate_random_email_prefix()
+            email_to_use = f"{email_prefix}@gml.com"
+        
+        print(f"[{username}] ...Attempt #{attempt + 1}: Trying to add email: {email_to_use}")
+
+        try:
+            if "/account" not in driver.current_url:
+                driver.get("https://www.roblox.com/my/account#!/info")
+            
+            add_email_button = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Add Email')]")))
+            add_email_button.click()
+            time.sleep(1)
+
+            email_input = WebDriverWait(driver, 10).until(EC.visibility_of_element_located((By.ID, "emailAddress")))
+            email_input.send_keys(email_to_use)
+            time.sleep(1)
+
+            modal_add_button = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, "//div[contains(@class, 'modal-content')]//button[contains(text(), 'Add Email')]")))
+            modal_add_button.click()
+            time.sleep(2)
+            
+            # ตรวจสอบว่ามี Error message หรือไม่
+            try:
+                error_msg = driver.find_element(By.CSS_SELECTOR, ".modal-body .text-error")
+                if error_msg.is_displayed():
+                    raise Exception(f"Invalid email error detected: {error_msg.text}")
+            except NoSuchElementException:
+                pass # ไม่เจอ error ถือว่าผ่าน
+
+            ok_button = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.XPATH, "//div[contains(@class, 'modal-content')]//button[text()='OK']")))
+            ok_button.click()
+            
+            # --- ถ้าสำเร็จ ---
+            print(f"[{username}] ...Successfully submitted email: {email_to_use}")
+            
+            # ลบอีเมล (ตัวแรก) ออกจากไฟล์ email.txt
+            try:
+                with open(email_file, "w", encoding="utf-8") as f:
+                    f.writelines(remaining_emails)
+                print(f"INFO: Removed '{original_email_to_try}' from email.txt.")
+            except Exception as e:
+                print(f"⚠️ Could not update email.txt: {e}")
+            
+            # บันทึกอีเมลที่ใช้ได้ผลจริงๆ ลงไฟล์ id_email.txt
+            log_id_email(username, email_to_use)
+            return email_to_use, True
+
+        except Exception as e:
+            print(f"[{username}] ...⚠️ Attempt #{attempt + 1} failed. Reason: {e}")
+            if attempt < max_retries:
+                print(f"[{username}] ...Retrying with a new email...")
+                try:
+                    cancel_button = driver.find_element(By.XPATH, "//div[contains(@class, 'modal-content')]//button[contains(text(), 'Cancel')]")
+                    cancel_button.click()
+                except:
+                    driver.refresh()
+                time.sleep(2)
+            else:
+                # หากลองครบทุกครั้งแล้วยังไม่สำเร็จ
+                print(f"[{username}] ...Failed to add any email after {max_retries + 1} total attempts.")
+                break # ออกจาก Loop
+
+    # หากจบ Loop แล้วยังไม่สำเร็จ ให้รีเฟรชหน้าแล้วไปต่อ
+    print(f"[{username}] ...Refreshing page and moving to the next function.")
+    driver.refresh()
+    time.sleep(3)
+    return None, False
+
+def generate_random_email_prefix(length=10):
+    """สร้างชื่ออีเมลแบบสุ่ม a-z, 0-9"""
+    chars = string.ascii_lowercase + string.digits
+    return ''.join(random.choice(chars) for _ in range(length))
+def log_id_email(username, email):
+    """บันทึก id และ email ที่คู่กันลงใน id_email.txt"""
+    try:
+        with open("id_email.txt", "a", encoding="utf-8") as f:
+            f.write(f"{username}:{email}\n")
+        print(f"INFO: Successfully logged '{username}:{email}' to id_email.txt.")
+    except Exception as e:
+        print(f"⚠️ Could not write to id_email.txt: {e}")
+def load_config():
+    """โหลดการตั้งค่าจากไฟล์ config และรองรับหลาย URL"""
+    if not os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            f.write("CHROME_PATH=C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe\n")
+            f.write("GROUP_URLS=https://www.roblox.com/groups/group1\n")
+            f.write("GAME_URLS=https://www.roblox.com/games/game1\n")
+            f.write("EXTENSION_PATH=C:\\path\\to\\your\\extension_folder\n")
+            f.write("ITEM_URLS=https://www.roblox.com/catalog/item1,https://www.roblox.com/catalog/item2\n") # เพิ่มตัวอย่าง
+            f.write("RESTART_BUTTON_IMAGE_PATH=C:\\path\\to\\your\\restart_button.png\n") 
+            f.write("Change_Display_name=True") # เพิ่มตัวอย่าง
+            f.write("Change_About_me=True")            
+            f.write("Add_Email=True")
+            f.write("Purchase_Random_Item=True") 
+            f.write("Notifly_FavMap=True") 
+            f.write("Join_Group=True")
+            f.write("\nROUTER_SSH_ENABLE=False")
+            f.write("\nROUTER_SSH_HOST=192.168.8.1")
+            f.write("\nROUTER_SSH_PORT=22")
+            f.write("\nROUTER_SSH_USER=root")
+            f.write("\nROUTER_SSH_PASSWORD=yourpassword")
+            f.write("\nROUTER_SSH_KEY_PATH=")
+            f.write("\nSSH_REBOOT_AFTER_N=10")
+            f.write("\nROUTER_WAIT_AFTER_REBOOT=100")
+            f.write("\nPARALLEL_WORKERS=5")
+            f.write("\nCAPTCHA_TIMEOUT_SEC=300")
+            f.write("\nINTERNET_CHECK_TIMEOUT=300")
+            f.write("\nGLOBAL_TIMEOUT_SEC=600")
+
+
+
+        print(f"❌ ไม่พบไฟล์ '{CONFIG_FILE}', ได้สร้างไฟล์ตัวอย่างขึ้นมา กรุณาแก้ไขข้อมูลให้ถูกต้องแล้วรันใหม่อีกครั้ง")
+        return None
+
+    config = {}
+    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+        for line in f:
+            if "=" in line:
+                key, value = line.strip().split("=", 1)
+                config[key] = value
+
+    # แปลง URL ที่เป็น string ให้เป็น list
+    config['GROUP_URLS'] = [url.strip() for url in config.get('GROUP_URLS', '').split(',') if url.strip()]
+    config['GAME_URLS'] = [url.strip() for url in config.get('GAME_URLS', '').split(',') if url.strip()]
+    config['ITEM_URLS'] = [url.strip() for url in config.get('ITEM_URLS', '').split(',') if url.strip()] # เพิ่มการอ่าน ITEM_URLS
+    
+    # เพิ่ม ITEM_URLS ใน key ที่จำเป็น
+    required_keys = ["CHROME_PATH", "GROUP_URLS", "GAME_URLS", "EXTENSION_PATH", "ITEM_URLS","RESTART_BUTTON_IMAGE_PATH","DISCORD_WEBHOOK_URL","Change_Display_name","Change_About_me","Purchase_Random_Item","Notifly_FavMap","Join_Group"]
+    if not all(key in config and config[key] for key in required_keys):
+        print(f"❌ ไฟล์ '{CONFIG_FILE}' ขาดการตั้งค่าที่จำเป็น กรุณาตรวจสอบให้มีครบทั้ง {required_keys}")
+        return None
+    return config
+
+def generate_password():
+    # ... (ฟังก์ชันนี้เหมือนเดิม) ...
+    return f"gml_{random.randint(10000, 99999)}"
+
+def log_success(username, password, cookies):
+    # ... (ฟังก์ชันนี้เหมือนเดิม) ...
+    roblo_security_cookie = ""
+    for cookie in cookies:
+        if cookie['name'] == '.ROBLOSECURITY':
+            roblo_security_cookie = cookie['value']
+            break
+    if roblo_security_cookie:
+        with open(SUCCESS_FILE, "a", encoding="utf-8") as f:
+            f.write(f"{username}:{password}:{roblo_security_cookie}\n")
+        return True
+    return False
+
+# --- [ใหม่] ฟังก์ชันสำหรับเปลี่ยน Display Name ---
+
+def perform_post_login_actions(driver, username,password, config):
+    """ฟังก์ชันสำหรับทำงานหลังล็อกอิน (เปลี่ยนชื่อ, แก้ไขโซเชียล, จอยกลุ่ม, ไลค์เกม)"""
+    print(f"[{username}] Starting post-login actions...")
+
+    # 1. เปลี่ยน Display Name
+    if config['Change_Display_name'] == "True":
+        change_display_name(driver, username)
+        # 2. แก้ไข Social Links
+    if config['Add_Email'] == "True":
+        add_email_to_account(driver, username)            # 2. แก้ไข Social Links
+        update_social_links(driver, username)
+    if config['Change_About_me'] == "True":
+        update_about_me(driver, username)
+    # 3. วนลูปเข้ากลุ่มทั้งหมด
+    if config['Purchase_Random_Item'] == "True":
+        purchase_random_item(driver, username, config)
+        # 4. วนลูปกดถูกใจ/ดาว/กระดิ่ง ทั้งหมด
+    if config['Notifly_FavMap'] == "True":
+        for i, game_url in enumerate(config['GAME_URLS'], 1):
+            try:
+                print(f"[{username}] ...Processing game {i}/{len(config['GAME_URLS'])}")
+                driver.get(game_url)
+                time.sleep(2)
+                try:
+                    fav_button = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.ID, "game-favorite-icon")))
+                    driver.execute_script("arguments[0].click();", fav_button)
+                    print(f"[{username}] ...Favorite action successful.")
+                    time.sleep(1)
+                except Exception:
+                    print(f"[{username}] ...⚠️ Could not perform Favorite action.")
+                try:
+                    follow_button = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.ID, "game-follow-icon")))
+                    driver.execute_script("arguments[0].click();", follow_button)
+                    print(f"[{username}] ...Follow action successful.")
+                    time.sleep(1)
+                except Exception:
+                    print(f"[{username}] ...⚠️ Could not perform Follow action.")
+                try:
+                    like_button = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.CSS_SELECTOR, "div.upvote")))
+                    driver.execute_script("arguments[0].click();", like_button)
+                    print(f"[{username}] ...Like action successful.")
+                    time.sleep(1)
+                except Exception:
+                    print(f"[{username}] ...⚠️ Could not perform Like action.")
+            except Exception as e:
+                print(f"[{username}] ...⚠️ An error occurred with game: {game_url} | {e}")
+    if config['Join_Group'] == "True":
+        for i, group_url in enumerate(config['GROUP_URLS'], 1):
+            print(f"[{username}] --- Processing Group {i}/{len(config['GROUP_URLS'])} ---")
+            
+            max_group_retries = 3
+            is_group_successful = False
+            
+            for attempt in range(max_group_retries):
+                print(f"[{username}] ...Group join attempt #{attempt + 1}/{max_group_retries} for URL: {group_url}")
+                try:
+                    driver.get(group_url)
+                    join_button_xpath = "//button[contains(., 'Join')]"
+                    
+                    # 1. ลองหาปุ่ม Join ก่อน
+                    try:
+                        join_button = WebDriverWait(driver, 10).until(
+                            EC.element_to_be_clickable((By.XPATH, join_button_xpath))
+                        )
+                    except TimeoutException:
+                        # ถ้าหาปุ่มไม่เจอใน 10 วิ แสดงว่าอยู่ในกลุ่มแล้ว
+                        print(f"[{username}] ...'Join' button not found. Assuming already in group.")
+                        is_group_successful = True
+                        break # ออกจาก Loop ของกลุ่มนี้ ไปทำกลุ่มต่อไป
+
+                    # 2. ถ้าเจอ ให้คลิกและรอแคปช่า
+                    driver.execute_script("arguments[0].click();", join_button)
+                    print(f"[{username}] ...'Join' button clicked. Checking for CAPTCHA...")
+
+
+                    if not wait_for_extension_to_solve(driver, context="Group Join"):
+                        # ถ้าแก้แคปช่าไม่สำเร็จ ให้ลองใหม่ในรอบถัดไป
+                        print(f"[{username}] ...CAPTCHA solve failed on attempt #{attempt + 1}. Retrying group...")
+                        continue # ไปยัง attempt ถัดไปของ Loop นี้
+
+                    # 3. ตรวจสอบหลังแก้แคปช่า ว่าปุ่ม Join หายไปจริงหรือไม่
+                    time.sleep(3) # รอให้หน้าเว็บอัปเดต
+                    try:
+                        driver.find_element(By.XPATH, join_button_xpath)
+                        # ถ้ายังเจอปุ่มอยู่ แสดงว่าจอยไม่สำเร็จ (เช่น Unable to join)
+                        print(f"[{username}] ...⚠️ Join failed after CAPTCHA (button still visible). Retrying group...")
+                        continue # ไปยัง attempt ถัดไปของ Loop นี้
+                    except NoSuchElementException:
+                        # ถ้าหาปุ่มไม่เจอ แสดงว่าจอยสำเร็จ
+                        print(f"[{username}] ...Successfully joined group.")
+                        is_group_successful = True
+                        break # ออกจาก Loop ของกลุ่มนี้ ไปทำกลุ่มต่อไป
+
+                except Exception as e:
+                    print(f"[{username}] ...An unexpected error occurred during group join attempt: {e}")
+                    # หากเกิด Error ที่ไม่คาดคิด ให้ลองใหม่ในรอบถัดไป
+                    continue
+            if not is_group_successful:
+                # หากลองครบ 3 ครั้งแล้วยังจอยกลุ่มนี้ไม่ได้
+                print(f"FATAL: [{username}] Failed to join group {group_url} after {max_group_retries} attempts.")
+                return # ออกจากฟังก์ชันทั้งหมดสำหรับบัญชีนี้
+            # --- ตรวจสอบผลลัพธ์ของกลุ่มนี้ ---
+
+
+# --- ส่วนที่เหลือของโค้ด (create_roblox_account, login_with_credentials, run modes, main) ---
+# --- ไม่มีการเปลี่ยนแปลง สามารถใช้ของเดิมได้เลย ---
+def log_failure(username, password, cookies):
+    """บันทึกข้อมูลบัญชีที่ล้มเหลวลงใน account_fail.txt"""
+    roblo_security_cookie = ""
+    if cookies:
+        for cookie in cookies:
+            if cookie['name'] == '.ROBLOSECURITY':
+                roblo_security_cookie = cookie['value']
+                break
+    else:
+        roblo_security_cookie = "NO_COOKIE_OBTAINED"
+
+    with open("account_fail.txt", "a", encoding="utf-8") as f:
+        f.write(f"{username}:{password}:{roblo_security_cookie}\n")
+    return True
+def purchase_random_item(driver, username, config):
+    """ฟังก์ชันสำหรับสุ่มซื้อไอเทมฟรี 1 ชิ้นจากลิสต์ใน config"""
+    # ตรวจสอบว่ามีลิสต์ไอเทมใน config หรือไม่
+    item_urls = config.get('ITEM_URLS')
+    if not item_urls:
+        print(f"[{username}] ...No item URLs found in config. Skipping purchase.")
+        return
+
+    print(f"[{username}] ...Attempting to purchase a random item...")
+    try:
+        # 1. สุ่มเลือกไอเทม 1 ชิ้นจากลิสต์
+        item_to_buy_url = random.choice(item_urls)
+        print(f"[{username}] ...Selected item: {item_to_buy_url}")
+        driver.get(item_to_buy_url)
+        time.sleep(5) # รอหน้าโหลด
+
+        # 2. ค้นหาและคลิกปุ่ม "Buy"
+        # ใช้ Selector ที่รวม class หลายๆ ตัวเพื่อความแม่นยำ
+        buy_button = WebDriverWait(driver, 15).until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, "button.shopping-cart-buy-button.btn-growth-lg"))
+        )
+        buy_button.click()
+        print(f"[{username}] ...Clicked 'Buy' button.")
+        time.sleep(1.5)
+
+        # 3. รอให้หน้าต่างยืนยันปรากฏขึ้นมา แล้วคลิกปุ่ม "Get Now"
+        get_now_button = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, "button.modal-button.btn-primary-md"))
+        )
+        get_now_button.click()
+        print(f"[{username}] ...Clicked 'Get Now' button.")
+        time.sleep(2) # รอให้หน้าต่างปิดไป
+        
+        print(f"[{username}] ...Successfully purchased item.")
+
+    except Exception as e:
+        print(f"[{username}] ...⚠️ Could not purchase item. (Already owned? Not for sale? Error: {e})")
+def create_roblox_account(username, password, config):
+    """ฟังก์ชันสำหรับสมัครบัญชี พร้อมระบบสุ่มชื่อใหม่เมื่อซ้ำ"""
+    chrome_options = Options()
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            
+    chrome_options.binary_location = config['CHROME_PATH']
+    chrome_options.add_argument("--log-level=3")
+    chrome_options.add_experimental_option('excludeSwitches', ['enable-logging'])
+    if config.get('EXTENSION_PATH'):
+        try:
+            chrome_options.add_argument(f"--load-extension={config['EXTENSION_PATH']}")
+            print(f"[{username}] Loading extension from: {config['EXTENSION_PATH']}")
+        except Exception as e:
+            print(f"⚠️ Could not load extension: {e}")
+
+    driver = None
+    try:
+        service = ChromeService(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+        #driver = uc.Chrome(options=chrome_options)
+    except Exception as e:
+        return {"status": "driver_error", "message": f"Could not start ChromeDriver: {e}"}
+
+
+    
+    # --- [ใหม่] ใช้ current_username เพื่อให้สามารถเปลี่ยนชื่อได้ ---
+    current_username = username 
+    try: 
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                print(f"[{current_username}] Registration attempt #{attempt + 1}/{max_attempts}...")
+                driver.get("https://www.roblox.com/")
+                
+                WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "signup-username")))
+                
+                # --- ส่วนกรอกข้อมูลวันเกิด ---
+                year = random.randint(1997, 2009)
+                month = random.choice(list(calendar.month_name)[1:])
+                day = random.randint(10, 28)
+                month_dropdown = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.ID, "MonthDropdown")))
+                month_dropdown.send_keys(month)
+                time.sleep(1)
+                day_dropdown = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.ID, "DayDropdown")))
+                day_dropdown.send_keys(str(day))
+                time.sleep(1)
+                year_dropdown = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.ID, "YearDropdown")))
+                year_dropdown.send_keys(str(year))
+                
+                # --- [ใหม่] กรอกชื่อที่อาจมีการเปลี่ยนแปลง และรหัสผ่าน ---
+                username_field = driver.find_element(By.ID, "signup-username")
+                username_field.clear()
+                username_field.send_keys(current_username)
+                driver.find_element(By.ID, "signup-password").send_keys(password)
+
+                try:
+                    signup_button = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.ID, "signup-button")))
+                    driver.execute_script("arguments[0].click();", signup_button)
+                    print(f"[{current_username}] Sign up button clicked, checking for CAPTCHA...")
+                except TimeoutException:
+                    # --- [ใหม่] ตรรกะการสุ่มชื่อใหม่ ---
+                    new_suffix = generate_random_suffix()
+                    new_username = f"{username}_{new_suffix}"
+                    print(f"[{username}] Username might be taken. Retrying with new name: {new_username}")
+                    current_username = new_username # อัปเดตชื่อที่จะใช้ในรอบถัดไป
+                    username = new_username
+                    continue # ข้ามไปลองใหม่ในรอบถัดไป
+                
+                if not wait_for_extension_to_solve(driver, context="Registration"):
+                    raise Exception("Extension failed to solve CAPTCHA.")
+
+                # ถ้าสำเร็จ จะออกจาก loop และไปที่ return ด้านล่าง
+                start_time = time.time()
+                is_successful = False
+                while time.time() - start_time < 60:
+                    if "home" in driver.current_url:
+                        is_successful = True
+                        break
+                    try:
+                        try_again_button = driver.find_element(By.XPATH, "//button[text()='Try again']")
+                        try_again_button.click()
+                        time.sleep(5)
+                    except NoSuchElementException: pass
+                    time.sleep(2)
+
+                if is_successful:
+                    print(f"✅ [{username}] Registration successful!")
+                    perform_post_login_actions(driver, username, password, config)
+                    cookies = driver.get_cookies()
+                    return {"status": "success", "username": username, "password": password, "cookies": cookies}
+                else:
+                    # ถ้าหมดเวลา 60 วินาที ให้โยน Exception เพื่อไปที่ except ด้านล่าง
+                    raise Exception("Final verification timed out after 60 seconds.")
+                # --- สิ้นสุดส่วนที่แก้ไข ---
+
+            except Exception as e:
+                print(f"[{username}] ERROR on attempt #{attempt + 1}: {e}")
+                if attempt < max_attempts - 1:
+                    print(f"[{username}] ...Retrying...")
+                    # ไม่ต้อง refresh เพราะ Loop จะ get URL ใหม่ให้เอง
+                else:
+                    print(f"[{username}] Failed to register after {max_attempts} attempts.")
+                    return {"status": "error", "message": f"Failed after {max_attempts} attempts."}
+        
+    finally:
+        # --- 3. บล็อกนี้จะทำงานเป็นอย่างสุดท้าย "เสมอ" ---
+        # ไม่ว่าโปรแกรมจะคืนค่า return จากจุดไหนใน try บล็อกก็ตาม
+        print(f"[{username}] --- Closing browser ---")
+        if driver:
+            driver.quit()
+    #finally:
+      #  if driver:
+       #     driver.quit()
+def click_image_on_screen(config, confidence=0.90):
+    """ค้นหารูปภาพบนหน้าจอและคลิกตรงกลาง โดยอ่าน Path จาก config"""
+    try:
+        # --- ส่วนที่แก้ไข: ดึง Path ของรูปภาพจาก config ---
+        image_file = config['RESTART_BUTTON_IMAGE_PATH']
+        # --- สิ้นสุดส่วนที่แก้ไข ---
+        
+        location = pyautogui.locateCenterOnScreen(image_file, confidence=confidence)
+        if location:
+            print(f"    [PyAutoGUI] Image '{image_file}' found at {location}. Clicking...")
+            pyautogui.click(location)
+            return True
+        else:
+            #print(f"    [PyAutoGUI] Image '{image_file}' not found on screen.")
+            return False
+    except Exception as e:
+        print(f"    [PyAutoGUI] An error occurred: {e}")
+        return False
+def wait_for_extension_to_solve(driver, context="Unknown"):
+    """
+    รอให้ Extension แก้ CAPTCHA (เวอร์ชันค้นหาเชิงลึก และกดปุ่ม Try again)
+    """
+    for attempt in range(4):
+        print(f"    [CAPTCHA] Attempt #{attempt + 1}/4 (Context: {context})...")
+        
+        captcha_iframe = None
+        try:
+            print("    [DEBUG] Searching for CAPTCHA in main document...")
+            captcha_iframe = WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "iframe[src*='arkoselabs']"))
+            )
+        except TimeoutException:
+        # --- ตรรกะการค้นหาเชิงลึก (เหมือนเดิม) ---
+            #print("    [DEBUG] Not in main document. Searching inside other iframes...")
+            try:
+                    parent_iframes = driver.find_elements(By.TAG_NAME, 'iframe')
+                    for p_iframe in parent_iframes:
+                        try:
+                            driver.switch_to.frame(p_iframe)
+                            captcha_iframe = WebDriverWait(driver, 3).until(
+                                EC.presence_of_element_located((By.CSS_SELECTOR, "iframe[src*='arkoselabs']"))
+                            )
+                            if captcha_iframe:
+                                # ถ้าเจอ ให้หยุดค้นหา (ตอนนี้เรายังอยู่ใน iframe ตัวแม่)
+                                break
+                        except TimeoutException:
+                            driver.switch_to.default_content()
+            except Exception:
+                    driver.switch_to.default_content()
+            
+        if captcha_iframe:
+            print("    [CAPTCHA] Detected. Waiting for extension to solve...")
+            try:
+                # รอจนกว่า iframe นั้นจะหายไป
+                WebDriverWait(driver, 40).until(EC.staleness_of(captcha_iframe))
+                print("    [CAPTCHA] Solved successfully by extension.")
+                driver.switch_to.default_content()
+                return True
+            except TimeoutException:
+                # ถ้าไม่หายไปใน 20 วิ แสดงว่า Extension แก้ไม่สำเร็จ
+                if attempt < 3:
+                    # --- ส่วนที่แก้ไข: เปลี่ยนเป็นค้นหาและคลิกปุ่ม 'Try again' ---
+                    try:
+                        # 3a. สลับเข้าไปในกรอบของแคปช่าก่อน
+                        if click_image_on_screen(config):
+                        # --- สิ้นสุดส่วนที่แก้ไข ---
+                            print("    [CAPTCHA] ...Attempting to click 'Try again'.")
+                            print("    [PyAutoGUI] Click successful. Waiting for CAPTCHA to reload...")
+                            time.sleep(2)
+                        else:
+                           print("    [CAPTCHA] Solved successfully by extension.")
+                           return True
+                            #time.sleep(1)
+                    except Exception:
+                        print("Nope")
+                        time.sleep(5)
+                    finally:
+                        # **สำคัญ:** กลับมาที่หน้าหลักเสมอไม่ว่าจะเกิดอะไรขึ้น
+                        driver.switch_to.default_content()
+                    # --- สิ้นสุดส่วนที่แก้ไข ---
+                else:
+                     driver.switch_to.default_content()
+        else:
+            print("    [CAPTCHA] No CAPTCHA detected after deep search. Continuing.")
+            return True
+
+    print(f"    [CAPTCHA] ❌ Failed to solve CAPTCHA after 4 attempts.")
+    return False
+def login_with_credentials(driver, username, password, config):
+    """ฟังก์ชันสำหรับล็อกอิน พร้อมระบบ Retry หากแก้แคปช่าไม่สำเร็จ"""
+    max_attempts = 3
+    for attempt in range(max_attempts):
+        try:
+            print(f"[{username}] Login attempt #{attempt + 1}/{max_attempts}...")
+            # ไปที่หน้าเว็บทุกครั้งที่เริ่มลองใหม่
+            driver.get("https://www.roblox.com/login")
+            
+            WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "login-username")))
+            driver.find_element(By.ID, "login-username").send_keys(username)
+            driver.find_element(By.ID, "login-password").send_keys(password)
+            driver.find_element(By.ID, "login-button").click()
+            print(f"[{username}] Attempting login, checking for CAPTCHA...")
+
+            if not wait_for_extension_to_solve(driver, context="Login"):
+                # ถ้าแก้ไม่สำเร็จ ให้โยน Exception เพื่อเริ่มลองใหม่
+                raise Exception("Extension failed to solve CAPTCHA.")
+            
+            WebDriverWait(driver, 60).until_not(EC.url_contains("login"))
+            if "home" in driver.current_url or "discover" in driver.current_url:
+                print(f"✅ [{username}] Login successful.")
+                return True # คืนค่า True เมื่อสำเร็จ
+            else:
+                # ถ้ายังล็อกอินไม่สำเร็จหลังแก้แคปช่า
+                raise Exception("Login failed after CAPTCHA or due to 2-Step Verification.")
+
+        except Exception as e:
+            print(f"[{username}] ERROR on attempt #{attempt + 1}: {e}")
+            if attempt < max_attempts - 1:
+                print(f"[{username}] ...Retrying...")
+            else:
+                print(f"❌ [{username}] Login failed after {max_attempts} attempts.")
+                return False # คืนค่า False เมื่อลองครบทุกครั้งแล้วยังไม่สำเร็จ
+def run_registration_mode(config):
+    """โหมดที่ 1: สมัครบัญชีใหม่ และลบไอดีที่ทำแล้วออกจากไฟล์"""
+    if not os.path.exists(ACCOUNTS_FILE):
+        print(f"❌ '{ACCOUNTS_FILE}' not found. Please create it and add usernames.")
+        return
+        
+    # อ่านข้อมูลทั้งหมดเก็บในหน่วยความจำก่อน
+    with open(ACCOUNTS_FILE, "r", encoding="utf-8") as f:
+        usernames_to_register = [line.strip() for line in f if line.strip()]
+
+    total_accounts_initial = len(usernames_to_register)
+    if total_accounts_initial == 0:
+        print("--- [Mode 1] No accounts found in accounts.txt. Nothing to do. ---")
+        return
+
+    ok_count = 0
+    fail_count = 0
+    webhook_url = config.get("DISCORD_WEBHOOK_URL")
+
+    print(f"--- [Mode 1] Starting registration process for {total_accounts_initial} accounts ---")
+    
+    # --- [ใหม่] ใช้ while loop เพื่อให้สามารถลบไอดีออกจากลิสต์ได้ ---
+    processed_count = 0
+    while usernames_to_register:
+        # ดึงชื่อแรกออกจากลิสต์มาทำงาน
+        username = usernames_to_register.pop(0) 
+        password = generate_password()
+        processed_count += 1
+        
+        print(f"\n▶️ Processing account {processed_count}/{total_accounts_initial}: {username}")
+        
+        result = create_roblox_account(username, password, config)
+        
+        # --- ส่วนจัดการ Webhook และนับคะแนน (เหมือนที่คุณส่งมา) ---
+        if result.get('status') == 'success':
+            ok_count += 1
+            if log_success(result['username'], result['password'], result['cookies']):
+                print(f"✔️ Successfully saved result for {result['username']} to {SUCCESS_FILE}")
+                success_embed = {
+                    "title": f"✅ Registration Successful ({processed_count}/{total_accounts_initial})",
+                    "color": 3066993,
+                    "fields": [
+                        {"name": "Username", "value": f"```{result['username']}```", "inline": True},
+                        {"name": "Password", "value": "```**********```", "inline": True},
+                        {"name": "---", "value": "**Post-Login Actions Status:**", "inline": False},
+                        {"name": "Display Name", "value": "✅ Done" if config.get('Change_Display_name', 'False').lower() == 'true' else "❌ Skipped", "inline": True},
+                        {"name": "About Me", "value": "✅ Done" if config.get('Change_About_me', 'False').lower() == 'true' else "❌ Skipped", "inline": True},
+                        {"name": "Purchase Item", "value": "✅ Done" if config.get('Purchase_Random_Item', 'False').lower() == 'true' else "❌ Skipped", "inline": True},
+                        {"name": "Notify/Fav Game", "value": "✅ Done" if config.get('Notifly_FavMap', 'False').lower() == 'true' else "❌ Skipped", "inline": True},
+                        {"name": "Join Group", "value": "✅ Done" if config.get('Join_Group', 'False').lower() == 'true' else "❌ Skipped", "inline": True},
+                    ]
+                }
+                send_to_discord(webhook_url, success_embed)
+        else:
+            fail_count += 1
+            error_message = result.get('message', 'Unknown Error')
+            print(f"❌ Failed for {username}: {error_message}")
+            fail_embed = {
+                "title": f"❌ Registration Failed ({processed_count}/{total_accounts_initial})",
+                "color": 15158332,
+                "fields": [{"name": "Username", "value": f"```{username}```"}, {"name": "Reason", "value": f"```{error_message}```"}]
+            }
+            send_to_discord(webhook_url, fail_embed)
+        
+        # --- NEW: รีบูตเราเตอร์ทุก ๆ N ไอดี ---
+        reboot_interval = int(config.get('SSH_REBOOT_AFTER_N', 10))
+        if reboot_interval > 0 and processed_count % reboot_interval == 0:
+            print(f"\n[Router] Triggering reboot after {processed_count} processed accounts...")
+            reboot_router_via_ssh(config)
+        
+        # --- [ใหม่] เขียนไฟล์ accounts.txt ใหม่ด้วยรายชื่อที่เหลืออยู่ ---
+        try:
+            with open(ACCOUNTS_FILE, "w", encoding="utf-8") as f:
+                for name in usernames_to_register:
+                    f.write(f"{name}\n")
+            print(f"INFO: Updated '{ACCOUNTS_FILE}'. {len(usernames_to_register)} accounts remaining.")
+        except Exception as e:
+            print(f"⚠️ Could not update '{ACCOUNTS_FILE}': {e}")
+            
+        print("--- Pausing for 5 seconds before next item ---")
+        time.sleep(5)
+    
+    # --- ส่วนสรุปผลตอนท้าย (เหมือนที่คุณส่งมา) ---
+    summary_embed = {"title": "📊 Registration Summary", "color": 3447003,
+                     "fields": [{"name": "Total Processed", "value": str(processed_count)}, {"name": "✅ Success", "value": str(ok_count)}, {"name": "❌ Failed", "value": str(fail_count)}]}
+    send_to_discord(webhook_url, summary_embed)
+    print("\n" + "="*20)
+    print("      MODE 1 SUMMARY")
+    print("="*20)
+    print(f"  Total Accounts Processed: {processed_count}/{total_accounts_initial}")
+    print(f"  ✅ Success: {ok_count}")
+    print(f"  ❌ Failed/Skipped: {fail_count}")
+    print("="*20)
+    print("\n--- [Mode 1] Registration process finished ---")
+    
+def change_display_name(driver, username):
+    time.sleep(3)
+    """ฟังก์ชันสำหรับเปลี่ยน Display Name พร้อมระบบลองใหม่หากชื่อซ้ำ"""
+    print(f"[{username}] ...Attempting to change display name...")
+    try:
+        # 1. ไปที่หน้าตั้งค่าและคลิกปุ่มแก้ไข
+        driver.get("https://www.roblox.com/my/account#!/info")
+        edit_button = WebDriverWait(driver, 15).until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, "button[data-testid='setting-text-field-edit-btn']"))
+        )
+        edit_button.click()
+        time.sleep(2)
+
+        # 2. ค้นหาช่องกรอกข้อมูลเพียงครั้งเดียว
+        display_name_input = WebDriverWait(driver, 10).until(
+            EC.visibility_of_element_located((By.CSS_SELECTOR, "input[focus-me='true']"))
+        )
+
+        is_successful = False
+        # --- ส่วนที่แก้ไข: เพิ่ม Loop สำหรับลองใหม่ 3 ครั้ง ---
+        for attempt in range(3):
+            # 3. สุ่มชื่อและกรอกข้อมูล
+            new_name = random.choice(DISPLAY_NAMES)
+            print(f"[{username}] ...Attempt #{attempt + 1}: Trying new display name: {new_name}")
+            
+            display_name_input.click()
+            time.sleep(1)
+            display_name_input.clear()
+            time.sleep(1)
+            display_name_input.send_keys(new_name)
+            time.sleep(2)
+
+            try:
+                # 4. พยายามค้นหาและคลิกปุ่ม Save
+                # หากชื่อซ้ำ ปุ่ม Save มักจะกดไม่ได้ (disabled) ทำให้ WebDriverWait Timeout
+                save_button_xpath = "//div[contains(@class, 'modal-content')]//button[contains(., 'Save')]"
+                save_button = WebDriverWait(driver, 5).until( # ลดเวลารอลงเหลือ 5 วินาที
+                    EC.element_to_be_clickable((By.XPATH, save_button_xpath))
+                )
+                save_button.click()
+                time.sleep(2)
+                
+                print(f"[{username}] ...Display name change submitted successfully.")
+                is_successful = True
+                break # หากสำเร็จ ให้ออกจาก Loop
+
+            except TimeoutException:
+                # หากรอ 5 วิแล้วปุ่มยังกดไม่ได้ ให้ถือว่าชื่อซ้ำและลองใหม่
+                print(f"[{username}] ...Attempt #{attempt + 1} failed, 'Save' button not clickable. Retrying...")
+                # การวน Loop รอบถัดไปจะเกิดขึ้นโดยอัตโนมัติ
+        
+        if not is_successful:
+            print(f"[{username}] ...Failed to change display name after 3 attempts. Closing modal.")
+            # หากลองครบ 3 ครั้งแล้วยังไม่สำเร็จ ให้หากดปุ่ม Cancel หรือกากบาทเพื่อปิดหน้าต่าง
+            try:
+                # ลองหากากบาท (X) เพื่อปิด
+                close_modal_button = driver.find_element(By.CSS_SELECTOR, ".modal-header .modal-close")
+                close_modal_button.click()
+            except:
+                # ถ้าไม่เจอ ให้กดปุ่ม Cancel แทน
+                cancel_button_xpath = "//div[contains(@class, 'modal-content')]//button[contains(., 'Cancel')]"
+                driver.find_element(By.XPATH, cancel_button_xpath).click()
+        # --- สิ้นสุดส่วนที่แก้ไข ---
+
+    except Exception as e:
+        print(f"[{username}] ...⚠️ A critical error occurred in the change name process: {e}")
+
+def update_about_me(driver, username):
+    print(f"[{username}] ...Attempting to update 'About Me' section...")
+    try:
+        driver.get("https://www.roblox.com/users/profile")
+        time.sleep(2)
+        # หน้านี้เปิดอยู่แล้ว ไม่ต้องไปไหน
+        # 2. ค้นหาช่อง Textarea ด้วย ID และรอจนกว่าจะมองเห็น
+        description_textarea = WebDriverWait(driver, 15).until(
+            EC.visibility_of_element_located((By.ID, "descriptionTextBox"))
+        )
+        
+        # 3. สุ่มข้อความ, คลิก, ล้างของเก่า, แล้วพิมพ์ของใหม่
+        about_text = random.choice(ABOUT_ME_TEXTS)
+        print(f"[{username}] ...Trying new about text: '{about_text}'")
+        
+        description_textarea.click()
+        time.sleep(1)
+        description_textarea.clear()
+        time.sleep(1)
+        description_textarea.send_keys(about_text)
+        time.sleep(1)
+
+        # 4. ค้นหาปุ่ม Save ด้วย ID และคลิก
+        save_button = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.ID, "SaveInfoSettings"))
+        )
+        save_button.click()
+        time.sleep(2) # รอให้ระบบบันทึก
+        
+        print(f"[{username}] ...'About Me' section saved successfully.")
+
+    except Exception as e:
+        print(f"[{username}] ...⚠️ Could not update 'About Me' section. Error: {e}")
+
+def update_social_links(driver, username):
+    """ฟังก์ชันสำหรับแก้ไข Social Links พร้อมการเลื่อนหน้าจอที่แม่นยำขึ้น"""
+    print(f"[{username}] ...Attempting to update social links...")
+    try:
+        time.sleep(3)
+        # --- ส่วนที่แก้ไข: เปลี่ยนวิธีการเลื่อนหน้าจอ ---
+        # 1. ค้นหาช่องกรอก Facebook เพื่อใช้เป็นจุดอ้างอิงในการเลื่อน
+        facebook_input_selector = "input[placeholder*='facebook.com']"
+        facebook_input_element = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, facebook_input_selector))
+        )
+        
+        # 2. สั่งให้เลื่อนหน้าจอไปที่ตำแหน่งของช่องกรอกนั้น แล้วจัดให้อยู่กลางหน้าจอ
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center', inline: 'nearest'});", facebook_input_element)
+        print(f"[{username}] ...Scrolled to social links section.")
+        time.sleep(1)
+        # --- สิ้นสุดส่วนที่แก้ไข ---
+
+        # สร้างฟังก์ชันย่อยเพื่อลดความซ้ำซ้อน (เหมือนเดิม)
+        def fill_social_input(placeholder_text, value_to_type):
+            try:
+                input_selector = f"input[placeholder*='{placeholder_text}']"
+                social_input = WebDriverWait(driver, 5).until(
+                    EC.visibility_of_element_located((By.CSS_SELECTOR, input_selector))
+                )
+                social_input.click(); time.sleep(1)
+                social_input.clear() # เพิ่มการล้างข้อมูลเก่าก่อนพิมพ์
+                social_input.send_keys(value_to_type); time.sleep(1)
+                print(f"[{username}] ...Filled '{placeholder_text}'")
+            except Exception:
+                print(f"[{username}] ...⚠️ Could not find or fill input for '{placeholder_text}'")
+        
+        # กรอกข้อมูลแต่ละช่อง (เหมือนเดิม)
+        fill_social_input("facebook.com", f"www.facebook.com/{username}")
+        #fill_social_input("@Roblox", f"https://x.com/{username}")
+        fill_social_input("@Roblox", f"")
+        fill_social_input("youtube.com", f"https://www.youtube.com/{username}") # ใช้ URL เต็มเพื่อให้สมจริง
+        fill_social_input("twitch.tv", f"www.twitch.tv/{username}")
+        fill_social_input("guilded.gg", f"")
+
+        # กดปุ่ม Save (เหมือนเดิม)
+        try:
+            save_button = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.ID, "save-social-settings"))
+            )
+            driver.execute_script("arguments[0].click();", save_button)
+            time.sleep(1)
+            print(f"[{username}] ...Clicked 'Save' for social links.")
+        except Exception:
+            print(f"[{username}] ...⚠️ Could not click the 'Save' button for social links.")
+
+    except Exception as e:
+        print(f"[{username}] ...⚠️ A critical error occurred in the update social links process: {e}")
+def run_login_and_update_cookie_mode(config):
+    """โหมดที่ 2: ล็อกอินด้วย id:pass, ทำงาน, แล้วอัปเดตคุกกี้"""
+    if not os.path.exists(COOKIE_FILE):
+        print(f"❌ '{COOKIE_FILE}' not found. Please create it and add id:pass data.")
+        return
+
+    accounts_data = []
+    with open(COOKIE_FILE, "r", encoding="utf-8") as f:
+        for line in f:
+            if ":" in line:
+                parts = line.strip().split(":", 2)
+                username, password = parts[0], parts[1]
+                old_cookie = parts[2] if len(parts) > 2 else ""
+                accounts_data.append({"username": username, "password": password, "cookie": old_cookie})
+
+    total_accounts = len(accounts_data)
+    # --- [เพิ่มใหม่] ตั้งค่าตัวนับ ---
+    ok_count = 0
+    fail_count = 0
+    webhook_url = config.get("DISCORD_WEBHOOK_URL")
+    print(f"--- [Mode 2] Processing {total_accounts} accounts ---")
+    
+    for i, account in enumerate(accounts_data, 1):
+        username, password = account['username'], account['password']
+        # --- [เพิ่มใหม่] เพิ่มตัวบอกลำดับ ---
+        print(f"\n▶️ Processing account {i}/{total_accounts}: {username}")
+        
+        driver = None
+        is_successful_run = False # --- [เพิ่มใหม่] ตัวแปรตรวจสอบความสำเร็จ
+        try:
+            chrome_options = Options()
+            chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+            chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            chrome_options.binary_location = config['CHROME_PATH']
+            chrome_options.add_argument("--log-level=3")
+            chrome_options.add_experimental_option('excludeSwitches', ['enable-logging'])
+
+            if config.get('EXTENSION_PATH'):
+                try:
+                    chrome_options.add_argument(f"--load-extension={config['EXTENSION_PATH']}")
+                    print(f"[{username}] Loading extension from: {config['EXTENSION_PATH']}")
+                except Exception as e:
+                    print(f"⚠️ Could not load extension: {e}")
+            
+            service = ChromeService(ChromeDriverManager().install())
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+            #driver = uc.Chrome(options=chrome_options)           
+            # --- [เพิ่มใหม่] ปิดแท็บส่วนเกินที่ Extension อาจเปิดขึ้นมา ---
+            
+            # --- [แก้ไข] ส่ง config เข้าไปในฟังก์ชันด้วย ---
+            if login_with_credentials(driver, username, password, config):
+                perform_post_login_actions(driver, username, password, config)
+                
+                new_cookies = driver.get_cookies()
+                new_roblo_security = ""
+                for cookie in new_cookies:
+                    if cookie['name'] == '.ROBLOSECURITY':
+                        new_roblo_security = cookie['value']
+                        break
+                if new_roblo_security:
+                    accounts_data[i-1]['cookie'] = new_roblo_security # แก้ไข index ให้ถูกต้อง
+                    print(f"✔️ [{username}] New cookie obtained.")
+                    is_successful_run = True # --- [เพิ่มใหม่] ตั้งค่าว่าสำเร็จ
+                else:
+                    print(f"⚠️ [{username}] Could not find new cookie after actions.")
+            # ถ้า login ไม่สำเร็จ จะไม่เข้า if นี้ และ is_successful_run จะเป็น False
+        
+        except Exception as e:
+            print(f"❌ A critical error occurred with account {username}: {e}")
+        finally:
+            # --- [เพิ่มใหม่] นับคะแนนตามผลลัพธ์ ---
+            if is_successful_run:
+                ok_count += 1
+                if log_success(username, password, new_cookies):
+                    print(f"✔️ Successfully saved result for {username} to {SUCCESS_FILE}")
+
+                    # --- [ใหม่] ส่ง Webhook เมื่อสำเร็จ ---
+                    success_embed = {
+                        "title": f"✅ Registration Successful ({i}/{total_accounts})",
+                        "color": 3066993, # สีเขียว
+                        "fields": [
+                            {"name": "Username", "value": f"```{username}```", "inline": True},
+                            {"name": "Password", "value": "```**********```", "inline": True},
+                            {"name": "---", "value": "**Post-Login Actions Status:**", "inline": False}, # ตัวแบ่งเพื่อความชัดเจน
+                            {"name": "Display Name", "value": "✅ Done" if config.get('Change_Display_name', 'False').lower() == 'true' else "❌ Skipped", "inline": True},
+                            {"name": "About Me", "value": "✅ Done" if config.get('Change_About_me', 'False').lower() == 'true' else "❌ Skipped", "inline": True},
+                            {"name": "Purchase Item", "value": "✅ Done" if config.get('Purchase_Random_Item', 'False').lower() == 'true' else "❌ Skipped", "inline": True},
+                            {"name": "Notify/Fav Game", "value": "✅ Done" if config.get('Notifly_FavMap', 'False').lower() == 'true' else "❌ Skipped", "inline": True},
+                            {"name": "Join Group", "value": "✅ Done" if config.get('Join_Group', 'False').lower() == 'true' else "❌ Skipped", "inline": True},
+                        ]
+                    }
+                    send_to_discord(webhook_url, success_embed)
+                else: # หากล้มเหลว
+                    fail_count += 1
+                    #print(f"❌ Failed for {username}: {result['message']}")
+                    # --- [ใหม่] ส่ง Webhook เมื่อล้มเหลว ---
+                    fail_embed = {
+                        "title": f"❌ Registration Failed ({i}/{total_accounts})",
+                        "color": 15158332, # สีแดง
+                        "fields": [
+                            {"name": "Username", "value": f"```{username}```"},
+                            {"name": "Password", "value": "```**********```", "inline": True},
+                            {"name": "---", "value": "**Post-Login Actions Status:**", "inline": False}, # ตัวแบ่งเพื่อความชัดเจน
+                            {"name": "Display Name", "value": "✅ Done" if config.get('Change_Display_name', 'False').lower() == 'true' else "❌ Skipped", "inline": True},
+                            {"name": "About Me", "value": "✅ Done" if config.get('Change_About_me', 'False').lower() == 'true' else "❌ Skipped", "inline": True},
+                            {"name": "Purchase Item", "value": "✅ Done" if config.get('Purchase_Random_Item', 'False').lower() == 'true' else "❌ Skipped", "inline": True},
+                            {"name": "Notify/Fav Game", "value": "✅ Done" if config.get('Notifly_FavMap', 'False').lower() == 'true' else "❌ Skipped", "inline": True},
+                            {"name": "Join Group", "value": "✅ Done" if config.get('Join_Group', 'False').lower() == 'true' else "❌ Skipped", "inline": True},
+                        ]
+                    }
+                    send_to_discord(webhook_url, fail_embed)
+
+            if driver:
+                driver.quit()
+        print("--- Pausing for 5 seconds before next item ---")
+        time.sleep(5)
+    
+    try:
+        with open(COOKIE_FILE, "w", encoding="utf-8") as f:
+            for acc in accounts_data:
+                f.write(f"{acc['username']}:{acc['password']}:{acc['cookie']}\n")
+        print(f"\n✅ Successfully updated '{COOKIE_FILE}' with new cookies.")
+    except Exception as e:
+        print(f"\n❌ Could not write to '{COOKIE_FILE}': {e}")
+    
+    # --- [เพิ่มใหม่] แสดงสรุปผล ---
+    print("\n" + "="*20)
+    print("      MODE 2 SUMMARY")
+    print("="*20)
+    print(f"  Total Accounts Processed: {total_accounts}")
+    print(f"  ✅ Success: {ok_count}")
+    print(f"  ❌ Failed: {fail_count}")
+    print("="*20)
+    print("\n--- [Mode 2] Process finished ---")
+def run_interactive_registration_mode(config):
+    """โหมดที่ 3: สมัครบัญชีแบบโต้ตอบ รับชื่อนำหน้าและจำนวน"""
+    print("\n--- [Mode 3] Interactive Registration ---")
+    
+    prefix = input("Please enter the username prefix (e.g., keyboard_): ").strip()
+    if not prefix:
+        print("❌ Prefix cannot be empty. Exiting mode.")
+        return
+
+    quantity = 0
+    while True:
+        try:
+            quantity_str = input("How many accounts to create? (Max 100): ").strip()
+            quantity = int(quantity_str)
+            if 1 <= quantity <= 100: break
+            else: print("❌ Please enter a number between 1 and 100.")
+        except ValueError:
+            print("❌ Invalid input. Please enter a number.")
+            
+    print("Generating unique numbers...")
+    possible_numbers = list(range(1000, 10000))
+    random.shuffle(possible_numbers)
+    numbers_to_use = possible_numbers[:quantity]
+    
+    total_accounts = len(numbers_to_use)
+    # --- [ใหม่] ตั้งค่าตัวนับ ---
+    ok_count = 0
+    fail_count = 0
+    webhook_url = config.get("DISCORD_WEBHOOK_URL")
+    print(f"--- Starting interactive registration for {total_accounts} accounts with prefix '{prefix}' ---")
+
+    for i, number in enumerate(numbers_to_use, 1):
+        username = f"{prefix}{number}"
+        password = generate_password()
+        # --- [ใหม่] เพิ่มตัวบอกลำดับ ---
+        print(f"\n▶️ Processing account {i}/{total_accounts}: {username} | Password: {password}")
+        
+        result = create_roblox_account(username, password, config)
+        
+        if result['status'] == 'success':
+            ok_count += 1
+            if log_success(result['username'], result['password'], result['cookies']):
+                print(f"✔️ Successfully saved result for {result['username']} to {SUCCESS_FILE}")
+                # --- [ใหม่] ส่ง Webhook เมื่อสำเร็จ ---
+                success_embed = {
+                    "title": f"✅ Registration Successful ({i}/{total_accounts})",
+                    "color": 3066993, # สีเขียว
+                    "fields": [
+                        {"name": "Username", "value": f"```{result['username']}```", "inline": True},
+                        {"name": "Password", "value": "```**********```", "inline": True},
+                        {"name": "---", "value": "**Post-Login Actions Status:**", "inline": False}, # ตัวแบ่งเพื่อความชัดเจน
+                        {"name": "Display Name", "value": "✅ Done" if config.get('Change_Display_name', 'False').lower() == 'true' else "❌ Skipped", "inline": True},
+                        {"name": "About Me", "value": "✅ Done" if config.get('Change_About_me', 'False').lower() == 'true' else "❌ Skipped", "inline": True},
+                        {"name": "Purchase Item", "value": "✅ Done" if config.get('Purchase_Random_Item', 'False').lower() == 'true' else "❌ Skipped", "inline": True},
+                        {"name": "Notify/Fav Game", "value": "✅ Done" if config.get('Notifly_FavMap', 'False').lower() == 'true' else "❌ Skipped", "inline": True},
+                        {"name": "Join Group", "value": "✅ Done" if config.get('Join_Group', 'False').lower() == 'true' else "❌ Skipped", "inline": True},
+                     ]
+                }
+                send_to_discord(webhook_url, success_embed)
+            else:
+                # ...
+                pass
+        else: # หากล้มเหลว
+            fail_count += 1
+            print(f"❌ Failed for {username}: {result['message']}")
+            # --- [ใหม่] ส่ง Webhook เมื่อล้มเหลว ---
+            fail_embed = {
+                "title": f"❌ Registration Failed ({i}/{total_accounts})",
+                "color": 15158332, # สีแดง
+                "fields": [
+                    {"name": "Username", "value": f"```{username}```"},
+                    {"name": "Reason", "value": f"```{result['message']}```"}
+                ]
+            }
+            send_to_discord(webhook_url, fail_embed)
+
+        if result['status'] == 'limit_reached':
+            print(f"🛑 {result['message']}. Halting all operations.")
+            break
+        
+        # --- NEW: รีบูตเราเตอร์ทุก ๆ N ไอดี ---
+        reboot_interval = int(config.get('SSH_REBOOT_AFTER_N', 10))
+        if reboot_interval > 0 and i % reboot_interval == 0:
+            print(f"\n[Router] Triggering reboot after {i} processed accounts...")
+            reboot_router_via_ssh(config)
+        
+        print("--- Pausing for 5 seconds before next item ---")
+        time.sleep(5)
+        
+    # --- [ใหม่] ส่ง Webhook สรุปผล ---
+    summary_embed = {
+        "title": "📊 Registration Summary",
+        "description": "The registration process has finished.",
+        "color": 3447003, # สีฟ้า
+        "fields": [
+            {"name": "Total Processed", "value": str(i), "inline": True},
+            {"name": "✅ Success", "value": str(ok_count), "inline": True},
+            {"name": "❌ Failed", "value": str(fail_count), "inline": True}
+        ]
+    }
+    send_to_discord(webhook_url, summary_embed)
+        
+    # --- [ใหม่] แสดงสรุปผล ---
+    print("\n" + "="*20)
+    print("      MODE 3 SUMMARY")
+    print("="*20)
+    print(f"  Total Accounts Processed: {i}/{total_accounts}")
+    print(f"  ✅ Success: {ok_count}")
+    print(f"  ❌ Failed/Skipped: {fail_count}")
+    print("="*20)
+    print("\n--- [Mode 3] Interactive registration process finished ---")
+
+# --- NEW: สำหรับรีบูตเราเตอร์ผ่าน SSH ---
+
+def reboot_router_via_ssh(config):
+    """เชื่อมต่อเราเตอร์ผ่าน SSH และสั่ง reboot เพื่อรีไอพี
+
+    การตั้งค่าที่รองรับ (เพิ่มใน config_register.txt):
+        ROUTER_SSH_ENABLE=True/False   # เปิด/ปิดฟังก์ชันนี้ (ค่าเริ่ม False)
+        ROUTER_SSH_HOST=192.168.8.1    # IP เราเตอร์ (GL-XE300C4 ค่า default)
+        ROUTER_SSH_PORT=22             # พอร์ต SSH (ปกติ 22)
+        ROUTER_SSH_USER=root           # ชื่อผู้ใช้ (root)
+        ROUTER_SSH_PASSWORD=yourpass   # รหัสผ่าน (หรือปล่อยว่างถ้าใช้ key-file)
+        ROUTER_SSH_KEY_PATH=/path/to/key # (ทางเลือก) ไฟล์ private key
+        SSH_REBOOT_AFTER_N=10          # รีบูตหลังสร้างบัญชีทุก ๆ N ไอดี
+        ROUTER_WAIT_AFTER_REBOOT=60    # หน่วยวินาที สำหรับรอเราเตอร์กลับมา
+    """
+    if config.get('ROUTER_SSH_ENABLE', 'False').lower() != 'true':
+        return False  # ฟังก์ชันถูกปิดไว้
+
+    host = config.get('ROUTER_SSH_HOST')
+    user = config.get('ROUTER_SSH_USER', 'root')
+    port = int(config.get('ROUTER_SSH_PORT', 22))
+    password = config.get('ROUTER_SSH_PASSWORD')
+    key_path = config.get('ROUTER_SSH_KEY_PATH')
+
+    if not host:
+        print("⚠️ [Router] HOST not specified. Skipping reboot.")
+        return False
+
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    try:
+        if password:
+            ssh.connect(hostname=host, port=port, username=user, password=password, timeout=10)
+        elif key_path and os.path.exists(key_path):
+            pkey = paramiko.RSAKey.from_private_key_file(key_path)
+            ssh.connect(hostname=host, port=port, username=user, pkey=pkey, timeout=10)
+        else:
+            print("⚠️ [Router] Neither password nor key provided. Skipping reboot.")
+            return False
+
+        print(f"[Router] Connected to {host}. Sending reboot command ...")
+        ssh.exec_command("reboot &")
+        ssh.close()
+        wait_sec = int(config.get('ROUTER_WAIT_AFTER_REBOOT', 60))
+        print(f"[Router] Reboot command sent. Waiting {wait_sec} seconds for router to come back...")
+        time.sleep(wait_sec)
+        print("[Router] Wait complete. Continuing operations.")
+        return True
+    except Exception as e:
+        print(f"❌ [Router] Failed to reboot router: {e}")
+        return False
+
+def run_parallel_registration_mode(config, worker_count=10):
+    """โหมดใหม่: สมัครบัญชีจากไฟล์ accounts.txt แบบขนาน เปิดเบราว์เซอร์พร้อมกัน worker_count จอ"""
+    import threading, queue
+    worker_count = int(config.get('PARALLEL_WORKERS', worker_count))
+
+    if not os.path.exists(ACCOUNTS_FILE):
+        print(f"❌ '{ACCOUNTS_FILE}' not found. Please create it and add usernames.")
+        return
+
+    with open(ACCOUNTS_FILE, "r", encoding="utf-8") as f:
+        usernames = [line.strip() for line in f if line.strip()]
+
+    total_accounts = len(usernames)
+    if total_accounts == 0:
+        print("--- [Parallel Mode] No accounts in accounts.txt ---")
+        return
+
+    print(f"--- [Parallel Mode] Starting registration for {total_accounts} accounts with {worker_count} parallel workers ---")
+
+    q = queue.Queue()
+    for name in usernames:
+        q.put(name)
+
+    ok_count = 0
+    fail_count = 0
+    processed_count = 0
+    lock = threading.Lock()          # ป้องกันข้อมูลชนกันเวลาอัปเดตตัวนับ/เขียนไฟล์
+    reboot_lock = threading.Lock()   # ให้มีรีบูตเดียวในเวลาเดียวกัน
+    reboot_interval = int(config.get('SSH_REBOOT_AFTER_N', 10))
+
+    def worker(idx: int):
+        nonlocal ok_count, fail_count, processed_count
+        while True:
+            try:
+                username = q.get_nowait()
+            except queue.Empty:
+                break
+
+            password = generate_password()
+            print(f"[Worker-{idx}] ▶️ Processing {username}")
+            result = create_roblox_account(username, password, config)
+
+            with lock:
+                processed_count += 1
+                if result.get('status') == 'success':
+                    ok_count += 1
+                    log_success(result['username'], result['password'], result['cookies'])
+                else:
+                    fail_count += 1
+
+                should_reboot = reboot_interval > 0 and processed_count % reboot_interval == 0
+
+            if should_reboot:
+                with reboot_lock:
+                    # double-check หลังได้ล็อก เพื่อกันซ้ำ
+                    if processed_count % reboot_interval == 0:
+                        print(f"\n[Router] Triggering reboot after {processed_count} processed accounts...")
+                        reboot_router_via_ssh(config)
+
+            q.task_done()
+        print(f"[Worker-{idx}] Finished.")
+
+    threads = [threading.Thread(target=worker, args=(i+1,), daemon=True) for i in range(worker_count)]
+    for t in threads: t.start()
+    for t in threads: t.join()
+
+    # ลบรายชื่อที่ทำสำเร็จออกจากไฟล์ accounts.txt
+    try:
+        with open(ACCOUNTS_FILE, "w", encoding="utf-8") as f:
+            # ในโหมดขนานถือว่าประมวลผลทุกแถว ไม่เหลือค้าง
+            pass
+    except Exception as e:
+        print(f"⚠️ Could not update '{ACCOUNTS_FILE}': {e}")
+
+    print("\n" + "="*20)
+    print("   PARALLEL MODE SUMMARY")
+    print("="*20)
+    print(f"  Total Accounts: {total_accounts}")
+    print(f"  ✅ Success: {ok_count}")
+    print(f"  ❌ Failed: {fail_count}")
+    print("="*20)
+    print("--- Parallel registration finished ---")
+
+def run_parallel_interactive_registration_mode(config):
+    """โหมดใหม่: Interactive Parallel Register (สุ่มชื่อ + ทำงานขนาน)"""
+    prefix = input("Please enter the username prefix (e.g., keyboard_): ").strip()
+    if not prefix:
+        print("❌ Prefix cannot be empty. Exiting mode.")
+        return
+
+    # จำนวนบัญชีที่ต้องสร้าง
+    while True:
+        try:
+            qty = int(input("How many accounts to create? (Max 100): ").strip())
+            if 1 <= qty <= 100:
+                break
+            else:
+                print("❌ Please enter a number between 1 and 100.")
+        except ValueError:
+            print("❌ Invalid number. Try again.")
+
+    # ผลรวมของเลขแบบไม่ซ้ำ
+    possible_numbers = list(range(1000, 10000))
+    random.shuffle(possible_numbers)
+    numbers_to_use = possible_numbers[:qty]
+
+    usernames = [f"{prefix}{num}" for num in numbers_to_use]
+
+    worker_count = int(config.get('PARALLEL_WORKERS', 5))
+    print(f"--- [Interactive Parallel] Starting with {qty} accounts using {worker_count} workers ---")
+
+    # ใช้ฟังก์ชัน parallel เดิม แต่ส่งผ่าน queue
+    import threading, queue
+    q = queue.Queue()
+    for name in usernames:
+        q.put(name)
+
+    ok_count = 0
+    fail_count = 0
+    processed_count = 0
+    lock = threading.Lock()
+    reboot_lock = threading.Lock()
+    reboot_interval = int(config.get('SSH_REBOOT_AFTER_N', 15))
+
+    def worker(idx:int):
+        nonlocal ok_count, fail_count, processed_count
+        while True:
+            try:
+                username = q.get_nowait()
+            except queue.Empty:
+                break
+            password = generate_password()
+            print(f"[Worker-{idx}] ▶️ Processing {username}")
+            result = create_roblox_account(username, password, config)
+
+            with lock:
+                processed_count += 1
+                if result.get('status') == 'success':
+                    ok_count += 1
+                    log_success(result['username'], result['password'], result['cookies'])
+                else:
+                    fail_count += 1
+                should_reboot = reboot_interval > 0 and processed_count % reboot_interval == 0
+            if should_reboot:
+                with reboot_lock:
+                    if processed_count % reboot_interval == 0:
+                        print(f"\n[Router] Triggering reboot after {processed_count} processed accounts...")
+                        reboot_router_via_ssh(config)
+            q.task_done()
+        print(f"[Worker-{idx}] Finished.")
+
+    threads = [threading.Thread(target=worker, args=(i+1,), daemon=True) for i in range(worker_count)]
+    for t in threads: t.start()
+    for t in threads: t.join()
+
+    print("\n" + "="*20)
+    print("  INTERACTIVE PARALLEL SUMMARY")
+    print("="*20)
+    print(f"  Total Accounts: {qty}")
+    print(f"  ✅ Success: {ok_count}")
+    print(f"  ❌ Failed: {fail_count}")
+    print("="*20)
+    print("--- Interactive Parallel finished ---")
+
+def run_parallel_batch_registration_mode(config):
+    """โหมดใหม่: สมัครบัญชีแบบขนานเป็นรอบ ๆ (batch) แล้วรีบูตหลังจบแต่ละรอบ"""
+    worker_count = int(config.get('PARALLEL_WORKERS', 5))
+    if worker_count < 1:
+        worker_count = 1
+    if not os.path.exists(ACCOUNTS_FILE):
+        print(f"❌ '{ACCOUNTS_FILE}' not found. Please create it and add usernames.")
+        return
+
+    with open(ACCOUNTS_FILE, "r", encoding="utf-8") as f:
+        usernames = [line.strip() for line in f if line.strip()]
+
+    total_accounts = len(usernames)
+    if total_accounts == 0:
+        print("--- [Batch Parallel Mode] No accounts in accounts.txt ---")
+        return
+
+    print(f"--- [Batch Parallel Mode] Starting registration for {total_accounts} accounts in batches of {worker_count} ---")
+
+    import threading
+    ok_count = 0
+    fail_count = 0
+    processed_count = 0
+    lock = threading.Lock()
+
+    index = 0
+    while index < total_accounts:
+        batch = usernames[index:index + worker_count]
+        if not batch:
+            break
+
+        threads = []
+        def register_user(user):
+            nonlocal ok_count, fail_count, processed_count
+            password = generate_password()
+            print(f"[Batch] ▶️ Processing {user}")
+            result = create_roblox_account(user, password, config)
+            with lock:
+                processed_count += 1
+                if result.get('status') == 'success':
+                    ok_count += 1
+                    log_success(result['username'], result['password'], result['cookies'])
+                else:
+                    fail_count += 1
+
+        for user in batch:
+            t = threading.Thread(target=register_user, args=(user,), daemon=True)
+            t.start()
+            threads.append(t)
+        for t in threads:
+            t.join()
+
+        index += len(batch)
+        print(f"--- Batch completed ({index}/{total_accounts}) accounts processed ---")
+
+        # รีบูตหลังจบรอบถ้ายังมีบัญชีเหลือให้ทำ
+        if index < total_accounts and config.get('ROUTER_SSH_ENABLE', 'False').lower() == 'true':
+            reboot_router_via_ssh(config)
+
+    # เคลียร์ accounts.txt
+    try:
+        with open(ACCOUNTS_FILE, "w", encoding="utf-8") as f:
+            pass
+    except Exception as e:
+        print(f"⚠️ Could not update '{ACCOUNTS_FILE}': {e}")
+
+    print("\n" + "="*20)
+    print("  BATCH PARALLEL SUMMARY")
+    print("="*20)
+    print(f"  Total Accounts: {total_accounts}")
+    print(f"  ✅ Success: {ok_count}")
+    print(f"  ❌ Failed: {fail_count}")
+    print("="*20)
+    print("--- Batch Parallel registration finished ---")
+
+def run_parallel_custom_names_mode(config):
+    """โหมดใหม่: ผู้ใช้ป้อน Username แบบกำหนดเอง แล้วสมัครแบบขนาน"""
+    raw_input = input("Enter usernames separated by space or comma: ").strip()
+    if not raw_input:
+        print("❌ No usernames provided. Exiting mode.")
+        return
+    # แยกชื่อ
+    separators = [',', ' ', '\n', '\t']
+    for sep in separators:
+        raw_input = raw_input.replace(sep, ',')
+    usernames = [u.strip() for u in raw_input.split(',') if u.strip()]
+    if not usernames:
+        print("❌ Could not parse any valid usernames.")
+        return
+
+    worker_count = int(config.get('PARALLEL_WORKERS', 5))
+    reboot_interval = int(config.get('SSH_REBOOT_AFTER_N', 15))
+
+    print(f"--- [Custom Parallel] Starting with {len(usernames)} usernames using {worker_count} workers ---")
+
+    import threading, queue
+    q = queue.Queue()
+    for name in usernames:
+        q.put(name)
+
+    ok_count = 0
+    fail_count = 0
+    processed_count = 0
+    lock = threading.Lock()
+    reboot_lock = threading.Lock()
+
+    def worker(idx:int):
+        nonlocal ok_count, fail_count, processed_count
+        while True:
+            try:
+                username = q.get_nowait()
+            except queue.Empty:
+                break
+            password = generate_password()
+            print(f"[Worker-{idx}] ▶️ Processing {username}")
+            result = create_roblox_account(username, password, config)
+            with lock:
+                processed_count += 1
+                if result.get('status') == 'success':
+                    ok_count += 1
+                    log_success(result['username'], result['password'], result['cookies'])
+                else:
+                    fail_count += 1
+                need_reboot = reboot_interval > 0 and processed_count % reboot_interval == 0
+            if need_reboot:
+                with reboot_lock:
+                    if processed_count % reboot_interval == 0:
+                        print(f"\n[Router] Triggering reboot after {processed_count} processed accounts...")
+                        reboot_router_via_ssh(config)
+            q.task_done()
+        print(f"[Worker-{idx}] Finished.")
+
+    threads = [threading.Thread(target=worker, args=(i+1,), daemon=True) for i in range(worker_count)]
+    for t in threads: t.start()
+    for t in threads: t.join()
+
+    print("\n" + "="*20)
+    print("  CUSTOM PARALLEL SUMMARY")
+    print("="*20)
+    print(f"  Total Accounts: {len(usernames)}")
+    print(f"  ✅ Success: {ok_count}")
+    print(f"  ❌ Failed: {fail_count}")
+    print("="*20)
+    print("--- Custom Parallel finished ---")
+
+def run_parallel_fixed10_mode(config):
+    """โหมดใหม่: เปิดพร้อมกัน 10 จอ สมัครให้ครบ 10 ไอดีแล้วรีบูต รอ 100 วิ (หรือค่าจาก config)"""
+    worker_count = 10
+    if not os.path.exists(ACCOUNTS_FILE):
+        print(f"❌ '{ACCOUNTS_FILE}' not found. Please create it and add usernames.")
+        return
+
+    with open(ACCOUNTS_FILE, "r", encoding="utf-8") as f:
+        usernames = [line.strip() for line in f if line.strip()]
+
+    total_accounts = len(usernames)
+    if total_accounts == 0:
+        print("--- [Fixed10 Mode] No accounts in accounts.txt ---")
+        return
+
+    import threading
+    ok_count = fail_count = processed = 0
+    idx = 0
+    lock = threading.Lock()
+
+    while idx < total_accounts:
+        batch = usernames[idx: idx+worker_count]
+        print(f"--- [Fixed10] Starting batch {idx//worker_count + 1}: {len(batch)} accounts ---")
+
+        threads = []
+        def task(user):
+            nonlocal ok_count, fail_count, processed
+            password = generate_password()
+            print(f"[Fixed10] ▶️ {user}")
+            result = create_roblox_account(user, password, config)
+            with lock:
+                processed += 1
+                if result.get('status') == 'success':
+                    ok_count += 1
+                    log_success(result['username'], result['password'], result['cookies'])
+                else:
+                    fail_count += 1
+
+        for u in batch:
+            t = threading.Thread(target=task, args=(u,), daemon=True)
+            t.start()
+            threads.append(t)
+        for t in threads:
+            t.join()
+
+        idx += len(batch)
+
+        if idx < total_accounts:
+            print("[Fixed10] Batch completed. Rebooting router before next batch...")
+            reboot_router_via_ssh(config)
+
+    # clear accounts file
+    try:
+        with open(ACCOUNTS_FILE, "w", encoding="utf-8") as f:
+            pass
+    except Exception:
+        pass
+
+    print("\n=== FIXED10 SUMMARY ===")
+    print(f"Total: {total_accounts} | Success: {ok_count} | Failed: {fail_count}")
+
+def run_fixed10_interactive_mode(config):
+    """Interactive Fixed10: ให้ผู้ใช้ใส่ prefix + จำนวน แล้วสมัครเป็นชุด ชุดละ 10 จอ รีบูตหลังแต่ละชุด"""
+    worker_count = 10  # เปิดพร้อมกัน 10 จอเสมอ
+
+    prefix = input("Please enter the username prefix (e.g., gml_): ").strip()
+    if not prefix:
+        print("❌ Prefix cannot be empty. Exiting mode.")
+        return
+
+    # จำนวนที่ต้องการสร้าง
+    while True:
+        try:
+            total_qty = int(input("How many accounts to create? (Max 200): ").strip())
+            if 1 <= total_qty <= 200:
+                break
+            else:
+                print("❌ Enter number between 1 and 200.")
+        except ValueError:
+            print("❌ Invalid number. Try again.")
+
+    # สร้างเลขไม่ซ้ำให้ username
+    possible_numbers = list(range(1000, 10000))
+    random.shuffle(possible_numbers)
+    numbers_to_use = possible_numbers[:total_qty]
+    usernames = [f"{prefix}{n}" for n in numbers_to_use]
+
+    import threading
+    ok_count = fail_count = processed = 0
+    idx = 0
+    lock = threading.Lock()
+
+    print(f"--- [Fixed10 Interactive] Starting with {total_qty} accounts, batches of 10 ---")
+
+    while idx < total_qty:
+        batch = usernames[idx: idx + worker_count]
+        threads = []
+
+        def task(user):
+            nonlocal ok_count, fail_count, processed
+            password = generate_password()
+            print(f"[Fixed10] ▶️ {user}")
+            result = create_roblox_account(user, password, config)
+            with lock:
+                processed += 1
+                if result.get('status') == 'success':
+                    ok_count += 1
+                    log_success(result['username'], result['password'], result['cookies'])
+                else:
+                    fail_count += 1
+
+        for u in batch:
+            t = threading.Thread(target=task, args=(u,), daemon=True)
+            t.start()
+            threads.append(t)
+        # --- NEW: wait for all threads but respect GLOBAL_TIMEOUT_SEC ---
+        global_timeout = int(config.get('GLOBAL_TIMEOUT_SEC', 600))
+        start_wait = time.time()
+        while True:
+            alive = [t for t in threads if t.is_alive()]
+            if not alive:
+                break  # ทุก thread เสร็จสิ้น
+            if time.time() - start_wait > global_timeout:
+                print(f"⚠️ GLOBAL TIMEOUT {global_timeout}s reached. Killing Chrome & rebooting...")
+                kill_all_chrome_processes()
+                prev_ip = get_public_ip()
+                reboot_router_via_ssh(config)
+                wait_for_ip_change(prev_ip, timeout=int(config.get('INTERNET_CHECK_TIMEOUT', 300)))
+                # เริ่ม batch นี้ใหม่
+                break
+            time.sleep(3)
+        # หากยังมี thread ค้าง (จาก timeout) ให้ทำซ้ำ batch เดิม
+        if any(t.is_alive() for t in threads):
+            continue
+        # --- END NEW ---
+
+        idx += len(batch)
+        print(f"--- Batch completed ({idx}/{total_qty}) ---")
+
+        if idx < total_qty:
+            print("[Fixed10] Rebooting router before next batch...")
+            reboot_router_via_ssh(config)
+
+    print("\n=== FIXED10 INTERACTIVE SUMMARY ===")
+    print(f"Total: {total_qty} | Success: {ok_count} | Failed: {fail_count}")
+
+def kill_all_chrome_processes():
+    """ปิด Chrome และ Chromedriver ทั้งหมดในระบบ (ใช้ pkill)"""
+    try:
+        import subprocess
+        subprocess.call("pkill -f chromedriver || true", shell=True)
+        subprocess.call("pkill -f chrome || true", shell=True)
+        print("[System] All Chrome/Chromedriver processes killed.")
+    except Exception as e:
+        print(f"⚠️ Could not kill chrome processes: {e}")
+
+def get_public_ip():
+    """ดึง IP สาธารณะปัจจุบัน ถ้าเชื่อมต่อไม่ได้คืน None"""
+    try:
+        resp = requests.get("https://api.ipify.org", timeout=5)
+        return resp.text.strip()
+    except Exception:
+        return None
+
+def wait_for_ip_change(prev_ip: str, timeout: int = 300, interval: int = 10):
+    """รอจนกว่าจะได้ IP ใหม่หรือหมดเวลา"""
+    import time
+    start = time.time()
+    while time.time() - start < timeout:
+        curr_ip = get_public_ip()
+        if curr_ip and curr_ip != prev_ip:
+            print(f"[Network] New IP detected: {curr_ip}")
+            return curr_ip
+        print("[Network] Waiting for IP change and connectivity...")
+        time.sleep(interval)
+    print("⚠️ [Network] Timeout waiting for new IP. Continuing anyway.")
+    return None
+
+if __name__ == "__main__":
+    config = load_config()
+    if not config:
+        exit()
+    while True:
+        print("\n" + "="*40)
+        print("Please select an operation mode:")
+        print("  1: Register from file")
+        print("  2: Log in & Update Cookie")
+        print("  3: Interactive Register")
+        print("  4: Parallel Register")
+        print("  5: Interactive Parallel Register")
+        print("  6: Batch Parallel Register")
+        print("  7: Custom Parallel Register")
+        print("  8: Fixed10 Mode")
+        print("  9: Fixed10 Interactive Mode")
+        print("  q: Exit program")
+        print("="*40)
+        
+        choice = input("Select mode (1/2/3/4/5/6/7/8/9/q): ").strip()
+        
+        if choice == '1':
+            run_registration_mode(config)
+            break
+        elif choice == '2':
+            run_login_and_update_cookie_mode(config)
+            break
+        elif choice == '3':
+            run_interactive_registration_mode(config) 
+            break    
+        elif choice == '4':
+            run_parallel_registration_mode(config)
+            break
+        elif choice == '5':
+            run_parallel_interactive_registration_mode(config)
+            break
+        elif choice == '6':
+            run_parallel_batch_registration_mode(config)
+            break
+        elif choice == '7':
+            run_parallel_custom_names_mode(config)
+            break
+        elif choice == '8':
+            run_parallel_fixed10_mode(config)
+            break
+        elif choice == '9':
+            run_fixed10_interactive_mode(config)
+            break
+        elif choice.lower() == 'q':
+            print("Exiting program.")
+            break
+        else:
+            print("Invalid choice. Please try again.")
+
+    input("\nProcess finished. Press Enter to exit...")
