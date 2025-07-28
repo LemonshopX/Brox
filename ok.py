@@ -405,7 +405,6 @@ def purchase_random_item(driver, username, config):
         time.sleep(5) # รอหน้าโหลด
 
         # 2. ค้นหาและคลิกปุ่ม "Buy"
-        # ใช้ Selector ที่รวม class หลายๆ ตัวเพื่อความแม่นยำ
         buy_button = WebDriverWait(driver, 15).until(
             EC.element_to_be_clickable((By.CSS_SELECTOR, "button.shopping-cart-buy-button.btn-growth-lg"))
         )
@@ -422,6 +421,9 @@ def purchase_random_item(driver, username, config):
         time.sleep(2) # รอให้หน้าต่างปิดไป
         
         print(f"[{username}] ...Successfully purchased item.")
+
+        # --- แต่งตัวหลังจากซื้อไอเท็ม ---
+        wear_last_purchased_item(driver, username)
 
     except Exception as e:
         print(f"[{username}] ...⚠️ Could not purchase item. (Already owned? Not for sale? Error: {e})")
@@ -1143,6 +1145,34 @@ def run_interactive_registration_mode(config):
     print(f"  ❌ Failed/Skipped: {fail_count}")
     print("="*20)
     print("\n--- [Mode 3] Interactive registration process finished ---")
+
+def wear_last_purchased_item(driver, username):
+    """ฟังก์ชันสำหรับเข้า Avatar Editor และ equip ไอเท็มล่าสุดที่ซื้อ (หรือสุ่มจาก inventory)"""
+    print(f"[{username}] ...Attempting to wear last purchased item...")
+    try:
+        # ไปที่หน้า Avatar Editor
+        driver.get("https://www.roblox.com/my/avatar")
+        time.sleep(5)
+        # รอให้ inventory โหลด (สมมติว่าไอเท็มล่าสุดอยู่บนสุด)
+        # หมายเหตุ: โค้ดนี้อาจต้องปรับ selector ตาม UI จริงของ Roblox
+        # ตัวอย่าง: คลิกไอเท็มชิ้นแรกใน inventory (ล่าสุด)
+        first_item_selector = "div.asset-item-icon-container > div > img"
+        first_item = WebDriverWait(driver, 15).until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, first_item_selector))
+        )
+        first_item.click()
+        print(f"[{username}] ...Clicked on the first item in inventory.")
+        time.sleep(2)
+        # คลิกปุ่ม Wear (Equip)
+        wear_button_selector = "button[aria-label='Wear']"
+        wear_button = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, wear_button_selector))
+        )
+        wear_button.click()
+        print(f"[{username}] ...Successfully equipped the item.")
+        time.sleep(2)
+    except Exception as e:
+        print(f"[{username}] ...⚠️ Could not wear item. Error: {e}")
 if __name__ == "__main__":
     config = load_config()
     if not config:
