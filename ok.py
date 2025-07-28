@@ -1645,7 +1645,18 @@ def run_fixed10_interactive_mode(config):
         for t in threads:
             t.join()
 
+        # --- NEW: Timeout & Network check ---
+        cap_timeout = int(config.get('CAPTCHA_TIMEOUT_SEC', 300))
+        if any(t.is_alive() for t in threads):
+            print(f"⚠️ Timeout {cap_timeout}s reached. Killing Chrome & rebooting...")
+            kill_all_chrome_processes()
+            prev_ip = get_public_ip()
+            reboot_router_via_ssh(config)
+            wait_for_ip_change(prev_ip, timeout=int(config.get('INTERNET_CHECK_TIMEOUT', 300)))
+            continue
+        # --- END NEW ---
         idx += len(batch)
+
         print(f"--- Batch completed ({idx}/{total_qty}) ---")
 
         if idx < total_qty:
@@ -1664,6 +1675,28 @@ def kill_all_chrome_processes():
         print("[System] All Chrome/Chromedriver processes killed.")
     except Exception as e:
         print(f"⚠️ Could not kill chrome processes: {e}")
+
+def get_public_ip():
+    """ดึง IP สาธารณะปัจจุบัน ถ้าเชื่อมต่อไม่ได้คืน None"""
+    try:
+        resp = requests.get("https://api.ipify.org", timeout=5)
+        return resp.text.strip()
+    except Exception:
+        return None
+
+def wait_for_ip_change(prev_ip: str, timeout: int = 300, interval: int = 10):
+    """รอจนกว่าจะได้ IP ใหม่หรือหมดเวลา"""
+    import time
+    start = time.time()
+    while time.time() - start < timeout:
+        curr_ip = get_public_ip()
+        if curr_ip and curr_ip != prev_ip:
+            print(f"[Network] New IP detected: {curr_ip}")
+            return curr_ip
+        print("[Network] Waiting for IP change and connectivity...")
+        time.sleep(interval)
+    print("⚠️ [Network] Timeout waiting for new IP. Continuing anyway.")
+    return None
 
 if __name__ == "__main__":
     config = load_config()
