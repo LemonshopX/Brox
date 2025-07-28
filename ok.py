@@ -1655,6 +1655,16 @@ def run_fixed10_interactive_mode(config):
     print("\n=== FIXED10 INTERACTIVE SUMMARY ===")
     print(f"Total: {total_qty} | Success: {ok_count} | Failed: {fail_count}")
 
+def kill_all_chrome_processes():
+    """ปิด Chrome และ Chromedriver ทั้งหมดในระบบ (ใช้ pkill)"""
+    try:
+        import subprocess
+        subprocess.call("pkill -f chromedriver || true", shell=True)
+        subprocess.call("pkill -f chrome || true", shell=True)
+        print("[System] All Chrome/Chromedriver processes killed.")
+    except Exception as e:
+        print(f"⚠️ Could not kill chrome processes: {e}")
+
 if __name__ == "__main__":
     config = load_config()
     if not config:
