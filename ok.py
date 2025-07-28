@@ -284,7 +284,9 @@ def perform_post_login_actions(driver, username,password, config):
     # 3. วนลูปเข้ากลุ่มทั้งหมด
     if config['Purchase_Random_Item'] == "True":
         purchase_random_item(driver, username, config)
-        # 4. วนลูปกดถูกใจ/ดาว/กระดิ่ง ทั้งหมด
+        # แต่งตัวหลังจากซื้อ item
+        wear_last_purchased_item(driver, username)
+    # 4. วนลูปกดถูกใจ/ดาว/กระดิ่ง ทั้งหมด
     if config['Notifly_FavMap'] == "True":
         for i, game_url in enumerate(config['GAME_URLS'], 1):
             try:
@@ -1143,6 +1145,33 @@ def run_interactive_registration_mode(config):
     print(f"  ❌ Failed/Skipped: {fail_count}")
     print("="*20)
     print("\n--- [Mode 3] Interactive registration process finished ---")
+def wear_last_purchased_item(driver, username):
+    """ฟังก์ชันสำหรับใส่ไอเทมล่าสุดที่เพิ่งซื้อ (ฟรี) ใน Avatar ของ Roblox"""
+    try:
+        print(f"[{username}] ...Attempting to wear last purchased item...")
+        # ไปที่หน้า inventory (หมวด Accessories หรือ All)
+        driver.get("https://www.roblox.com/my/inventory#!/accessories")
+        time.sleep(4)
+        # หาไอเทมล่าสุด (ช่องแรกสุด)
+        # ปุ่ม Wear มักจะอยู่ในหน้า item detail
+        first_item = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, "li.list-item.asset-item a"))
+        )
+        first_item_url = first_item.get_attribute("href")
+        print(f"[{username}] ...Opening item page: {first_item_url}")
+        driver.get(first_item_url)
+        time.sleep(3)
+        # คลิกปุ่ม Wear (ถ้ามี)
+        try:
+            wear_button = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Wear')]"))
+            )
+            wear_button.click()
+            print(f"[{username}] ...Successfully wore the item.")
+        except Exception:
+            print(f"[{username}] ...No 'Wear' button found or already wearing this item.")
+    except Exception as e:
+        print(f"[{username}] ...⚠️ Could not wear last purchased item. Error: {e}")
 if __name__ == "__main__":
     config = load_config()
     if not config:
