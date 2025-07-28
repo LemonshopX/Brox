@@ -21,6 +21,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service as ChromeService
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
+import threading, queue
 
 # --- การตั้งค่าไฟล์ ---
 CONFIG_FILE = "config_register.txt"
@@ -224,6 +225,18 @@ def load_config():
             f.write("Purchase_Random_Item=True") 
             f.write("Notifly_FavMap=True") 
             f.write("Join_Group=True")
+            f.write("\nROUTER_SSH_ENABLE=False")
+            f.write("\nROUTER_SSH_HOST=192.168.8.1")
+            f.write("\nROUTER_SSH_PORT=22")
+            f.write("\nROUTER_SSH_USER=root")
+            f.write("\nROUTER_SSH_PASSWORD=yourpassword")
+            f.write("\nROUTER_SSH_KEY_PATH=")
+            f.write("\nSSH_REBOOT_AFTER_N=10")
+            f.write("\nROUTER_WAIT_AFTER_REBOOT=100")
+            f.write("\nPARALLEL_WORKERS=5")
+            f.write("\nCAPTCHA_TIMEOUT_SEC=300")
+            f.write("\nINTERNET_CHECK_TIMEOUT=300")
+            f.write("\nGLOBAL_TIMEOUT_SEC=600")
 
 
 
@@ -725,6 +738,12 @@ def run_registration_mode(config):
             }
             send_to_discord(webhook_url, fail_embed)
         
+        # --- NEW: รีบูตเราเตอร์ทุก ๆ N ไอดี ---
+        reboot_interval = int(config.get('SSH_REBOOT_AFTER_N', 10))
+        if reboot_interval > 0 and processed_count % reboot_interval == 0:
+            print(f"\n[Router] Triggering reboot after {processed_count} processed accounts...")
+            reboot_router_via_ssh(config)
+        
         # --- [ใหม่] เขียนไฟล์ accounts.txt ใหม่ด้วยรายชื่อที่เหลืออยู่ ---
         try:
             with open(ACCOUNTS_FILE, "w", encoding="utf-8") as f:
@@ -1118,6 +1137,12 @@ def run_interactive_registration_mode(config):
             print(f"🛑 {result['message']}. Halting all operations.")
             break
         
+        # --- NEW: รีบูตเราเตอร์ทุก ๆ N ไอดี ---
+        reboot_interval = int(config.get('SSH_REBOOT_AFTER_N', 10))
+        if reboot_interval > 0 and i % reboot_interval == 0:
+            print(f"\n[Router] Triggering reboot after {i} processed accounts...")
+            reboot_router_via_ssh(config)
+        
         print("--- Pausing for 5 seconds before next item ---")
         time.sleep(5)
         
@@ -1143,6 +1168,546 @@ def run_interactive_registration_mode(config):
     print(f"  ❌ Failed/Skipped: {fail_count}")
     print("="*20)
     print("\n--- [Mode 3] Interactive registration process finished ---")
+
+# --- NEW: สำหรับรีบูตเราเตอร์ผ่าน SSH ---
+
+def reboot_router_via_ssh(config):
+    """เชื่อมต่อเราเตอร์ผ่าน SSH และสั่ง reboot เพื่อรีไอพี
+
+    การตั้งค่าที่รองรับ (เพิ่มใน config_register.txt):
+        ROUTER_SSH_ENABLE=True/False   # เปิด/ปิดฟังก์ชันนี้ (ค่าเริ่ม False)
+        ROUTER_SSH_HOST=192.168.8.1    # IP เราเตอร์ (GL-XE300C4 ค่า default)
+        ROUTER_SSH_PORT=22             # พอร์ต SSH (ปกติ 22)
+        ROUTER_SSH_USER=root           # ชื่อผู้ใช้ (root)
+        ROUTER_SSH_PASSWORD=yourpass   # รหัสผ่าน (หรือปล่อยว่างถ้าใช้ key-file)
+        ROUTER_SSH_KEY_PATH=/path/to/key # (ทางเลือก) ไฟล์ private key
+        SSH_REBOOT_AFTER_N=10          # รีบูตหลังสร้างบัญชีทุก ๆ N ไอดี
+        ROUTER_WAIT_AFTER_REBOOT=60    # หน่วยวินาที สำหรับรอเราเตอร์กลับมา
+    """
+    if config.get('ROUTER_SSH_ENABLE', 'False').lower() != 'true':
+        return False  # ฟังก์ชันถูกปิดไว้
+
+    host = config.get('ROUTER_SSH_HOST')
+    user = config.get('ROUTER_SSH_USER', 'root')
+    port = int(config.get('ROUTER_SSH_PORT', 22))
+    password = config.get('ROUTER_SSH_PASSWORD')
+    key_path = config.get('ROUTER_SSH_KEY_PATH')
+
+    if not host:
+        print("⚠️ [Router] HOST not specified. Skipping reboot.")
+        return False
+
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    try:
+        if password:
+            ssh.connect(hostname=host, port=port, username=user, password=password, timeout=10)
+        elif key_path and os.path.exists(key_path):
+            pkey = paramiko.RSAKey.from_private_key_file(key_path)
+            ssh.connect(hostname=host, port=port, username=user, pkey=pkey, timeout=10)
+        else:
+            print("⚠️ [Router] Neither password nor key provided. Skipping reboot.")
+            return False
+
+        print(f"[Router] Connected to {host}. Sending reboot command ...")
+        ssh.exec_command("reboot &")
+        ssh.close()
+        wait_sec = int(config.get('ROUTER_WAIT_AFTER_REBOOT', 60))
+        print(f"[Router] Reboot command sent. Waiting {wait_sec} seconds for router to come back...")
+        time.sleep(wait_sec)
+        print("[Router] Wait complete. Continuing operations.")
+        return True
+    except Exception as e:
+        print(f"❌ [Router] Failed to reboot router: {e}")
+        return False
+
+def run_parallel_registration_mode(config, worker_count=10):
+    """โหมดใหม่: สมัครบัญชีจากไฟล์ accounts.txt แบบขนาน เปิดเบราว์เซอร์พร้อมกัน worker_count จอ"""
+    import threading, queue
+    worker_count = int(config.get('PARALLEL_WORKERS', worker_count))
+
+    if not os.path.exists(ACCOUNTS_FILE):
+        print(f"❌ '{ACCOUNTS_FILE}' not found. Please create it and add usernames.")
+        return
+
+    with open(ACCOUNTS_FILE, "r", encoding="utf-8") as f:
+        usernames = [line.strip() for line in f if line.strip()]
+
+    total_accounts = len(usernames)
+    if total_accounts == 0:
+        print("--- [Parallel Mode] No accounts in accounts.txt ---")
+        return
+
+    print(f"--- [Parallel Mode] Starting registration for {total_accounts} accounts with {worker_count} parallel workers ---")
+
+    q = queue.Queue()
+    for name in usernames:
+        q.put(name)
+
+    ok_count = 0
+    fail_count = 0
+    processed_count = 0
+    lock = threading.Lock()          # ป้องกันข้อมูลชนกันเวลาอัปเดตตัวนับ/เขียนไฟล์
+    reboot_lock = threading.Lock()   # ให้มีรีบูตเดียวในเวลาเดียวกัน
+    reboot_interval = int(config.get('SSH_REBOOT_AFTER_N', 10))
+
+    def worker(idx: int):
+        nonlocal ok_count, fail_count, processed_count
+        while True:
+            try:
+                username = q.get_nowait()
+            except queue.Empty:
+                break
+
+            password = generate_password()
+            print(f"[Worker-{idx}] ▶️ Processing {username}")
+            result = create_roblox_account(username, password, config)
+
+            with lock:
+                processed_count += 1
+                if result.get('status') == 'success':
+                    ok_count += 1
+                    log_success(result['username'], result['password'], result['cookies'])
+                else:
+                    fail_count += 1
+
+                should_reboot = reboot_interval > 0 and processed_count % reboot_interval == 0
+
+            if should_reboot:
+                with reboot_lock:
+                    # double-check หลังได้ล็อก เพื่อกันซ้ำ
+                    if processed_count % reboot_interval == 0:
+                        print(f"\n[Router] Triggering reboot after {processed_count} processed accounts...")
+                        reboot_router_via_ssh(config)
+
+            q.task_done()
+        print(f"[Worker-{idx}] Finished.")
+
+    threads = [threading.Thread(target=worker, args=(i+1,), daemon=True) for i in range(worker_count)]
+    for t in threads: t.start()
+    for t in threads: t.join()
+
+    # ลบรายชื่อที่ทำสำเร็จออกจากไฟล์ accounts.txt
+    try:
+        with open(ACCOUNTS_FILE, "w", encoding="utf-8") as f:
+            # ในโหมดขนานถือว่าประมวลผลทุกแถว ไม่เหลือค้าง
+            pass
+    except Exception as e:
+        print(f"⚠️ Could not update '{ACCOUNTS_FILE}': {e}")
+
+    print("\n" + "="*20)
+    print("   PARALLEL MODE SUMMARY")
+    print("="*20)
+    print(f"  Total Accounts: {total_accounts}")
+    print(f"  ✅ Success: {ok_count}")
+    print(f"  ❌ Failed: {fail_count}")
+    print("="*20)
+    print("--- Parallel registration finished ---")
+
+def run_parallel_interactive_registration_mode(config):
+    """โหมดใหม่: Interactive Parallel Register (สุ่มชื่อ + ทำงานขนาน)"""
+    prefix = input("Please enter the username prefix (e.g., keyboard_): ").strip()
+    if not prefix:
+        print("❌ Prefix cannot be empty. Exiting mode.")
+        return
+
+    # จำนวนบัญชีที่ต้องสร้าง
+    while True:
+        try:
+            qty = int(input("How many accounts to create? (Max 100): ").strip())
+            if 1 <= qty <= 100:
+                break
+            else:
+                print("❌ Please enter a number between 1 and 100.")
+        except ValueError:
+            print("❌ Invalid number. Try again.")
+
+    # ผลรวมของเลขแบบไม่ซ้ำ
+    possible_numbers = list(range(1000, 10000))
+    random.shuffle(possible_numbers)
+    numbers_to_use = possible_numbers[:qty]
+
+    usernames = [f"{prefix}{num}" for num in numbers_to_use]
+
+    worker_count = int(config.get('PARALLEL_WORKERS', 5))
+    print(f"--- [Interactive Parallel] Starting with {qty} accounts using {worker_count} workers ---")
+
+    # ใช้ฟังก์ชัน parallel เดิม แต่ส่งผ่าน queue
+    import threading, queue
+    q = queue.Queue()
+    for name in usernames:
+        q.put(name)
+
+    ok_count = 0
+    fail_count = 0
+    processed_count = 0
+    lock = threading.Lock()
+    reboot_lock = threading.Lock()
+    reboot_interval = int(config.get('SSH_REBOOT_AFTER_N', 15))
+
+    def worker(idx:int):
+        nonlocal ok_count, fail_count, processed_count
+        while True:
+            try:
+                username = q.get_nowait()
+            except queue.Empty:
+                break
+            password = generate_password()
+            print(f"[Worker-{idx}] ▶️ Processing {username}")
+            result = create_roblox_account(username, password, config)
+
+            with lock:
+                processed_count += 1
+                if result.get('status') == 'success':
+                    ok_count += 1
+                    log_success(result['username'], result['password'], result['cookies'])
+                else:
+                    fail_count += 1
+                should_reboot = reboot_interval > 0 and processed_count % reboot_interval == 0
+            if should_reboot:
+                with reboot_lock:
+                    if processed_count % reboot_interval == 0:
+                        print(f"\n[Router] Triggering reboot after {processed_count} processed accounts...")
+                        reboot_router_via_ssh(config)
+            q.task_done()
+        print(f"[Worker-{idx}] Finished.")
+
+    threads = [threading.Thread(target=worker, args=(i+1,), daemon=True) for i in range(worker_count)]
+    for t in threads: t.start()
+    for t in threads: t.join()
+
+    print("\n" + "="*20)
+    print("  INTERACTIVE PARALLEL SUMMARY")
+    print("="*20)
+    print(f"  Total Accounts: {qty}")
+    print(f"  ✅ Success: {ok_count}")
+    print(f"  ❌ Failed: {fail_count}")
+    print("="*20)
+    print("--- Interactive Parallel finished ---")
+
+def run_parallel_batch_registration_mode(config):
+    """โหมดใหม่: สมัครบัญชีแบบขนานเป็นรอบ ๆ (batch) แล้วรีบูตหลังจบแต่ละรอบ"""
+    worker_count = int(config.get('PARALLEL_WORKERS', 5))
+    if worker_count < 1:
+        worker_count = 1
+    if not os.path.exists(ACCOUNTS_FILE):
+        print(f"❌ '{ACCOUNTS_FILE}' not found. Please create it and add usernames.")
+        return
+
+    with open(ACCOUNTS_FILE, "r", encoding="utf-8") as f:
+        usernames = [line.strip() for line in f if line.strip()]
+
+    total_accounts = len(usernames)
+    if total_accounts == 0:
+        print("--- [Batch Parallel Mode] No accounts in accounts.txt ---")
+        return
+
+    print(f"--- [Batch Parallel Mode] Starting registration for {total_accounts} accounts in batches of {worker_count} ---")
+
+    import threading
+    ok_count = 0
+    fail_count = 0
+    processed_count = 0
+    lock = threading.Lock()
+
+    index = 0
+    while index < total_accounts:
+        batch = usernames[index:index + worker_count]
+        if not batch:
+            break
+
+        threads = []
+        def register_user(user):
+            nonlocal ok_count, fail_count, processed_count
+            password = generate_password()
+            print(f"[Batch] ▶️ Processing {user}")
+            result = create_roblox_account(user, password, config)
+            with lock:
+                processed_count += 1
+                if result.get('status') == 'success':
+                    ok_count += 1
+                    log_success(result['username'], result['password'], result['cookies'])
+                else:
+                    fail_count += 1
+
+        for user in batch:
+            t = threading.Thread(target=register_user, args=(user,), daemon=True)
+            t.start()
+            threads.append(t)
+        for t in threads:
+            t.join()
+
+        index += len(batch)
+        print(f"--- Batch completed ({index}/{total_accounts}) accounts processed ---")
+
+        # รีบูตหลังจบรอบถ้ายังมีบัญชีเหลือให้ทำ
+        if index < total_accounts and config.get('ROUTER_SSH_ENABLE', 'False').lower() == 'true':
+            reboot_router_via_ssh(config)
+
+    # เคลียร์ accounts.txt
+    try:
+        with open(ACCOUNTS_FILE, "w", encoding="utf-8") as f:
+            pass
+    except Exception as e:
+        print(f"⚠️ Could not update '{ACCOUNTS_FILE}': {e}")
+
+    print("\n" + "="*20)
+    print("  BATCH PARALLEL SUMMARY")
+    print("="*20)
+    print(f"  Total Accounts: {total_accounts}")
+    print(f"  ✅ Success: {ok_count}")
+    print(f"  ❌ Failed: {fail_count}")
+    print("="*20)
+    print("--- Batch Parallel registration finished ---")
+
+def run_parallel_custom_names_mode(config):
+    """โหมดใหม่: ผู้ใช้ป้อน Username แบบกำหนดเอง แล้วสมัครแบบขนาน"""
+    raw_input = input("Enter usernames separated by space or comma: ").strip()
+    if not raw_input:
+        print("❌ No usernames provided. Exiting mode.")
+        return
+    # แยกชื่อ
+    separators = [',', ' ', '\n', '\t']
+    for sep in separators:
+        raw_input = raw_input.replace(sep, ',')
+    usernames = [u.strip() for u in raw_input.split(',') if u.strip()]
+    if not usernames:
+        print("❌ Could not parse any valid usernames.")
+        return
+
+    worker_count = int(config.get('PARALLEL_WORKERS', 5))
+    reboot_interval = int(config.get('SSH_REBOOT_AFTER_N', 15))
+
+    print(f"--- [Custom Parallel] Starting with {len(usernames)} usernames using {worker_count} workers ---")
+
+    import threading, queue
+    q = queue.Queue()
+    for name in usernames:
+        q.put(name)
+
+    ok_count = 0
+    fail_count = 0
+    processed_count = 0
+    lock = threading.Lock()
+    reboot_lock = threading.Lock()
+
+    def worker(idx:int):
+        nonlocal ok_count, fail_count, processed_count
+        while True:
+            try:
+                username = q.get_nowait()
+            except queue.Empty:
+                break
+            password = generate_password()
+            print(f"[Worker-{idx}] ▶️ Processing {username}")
+            result = create_roblox_account(username, password, config)
+            with lock:
+                processed_count += 1
+                if result.get('status') == 'success':
+                    ok_count += 1
+                    log_success(result['username'], result['password'], result['cookies'])
+                else:
+                    fail_count += 1
+                need_reboot = reboot_interval > 0 and processed_count % reboot_interval == 0
+            if need_reboot:
+                with reboot_lock:
+                    if processed_count % reboot_interval == 0:
+                        print(f"\n[Router] Triggering reboot after {processed_count} processed accounts...")
+                        reboot_router_via_ssh(config)
+            q.task_done()
+        print(f"[Worker-{idx}] Finished.")
+
+    threads = [threading.Thread(target=worker, args=(i+1,), daemon=True) for i in range(worker_count)]
+    for t in threads: t.start()
+    for t in threads: t.join()
+
+    print("\n" + "="*20)
+    print("  CUSTOM PARALLEL SUMMARY")
+    print("="*20)
+    print(f"  Total Accounts: {len(usernames)}")
+    print(f"  ✅ Success: {ok_count}")
+    print(f"  ❌ Failed: {fail_count}")
+    print("="*20)
+    print("--- Custom Parallel finished ---")
+
+def run_parallel_fixed10_mode(config):
+    """โหมดใหม่: เปิดพร้อมกัน 10 จอ สมัครให้ครบ 10 ไอดีแล้วรีบูต รอ 100 วิ (หรือค่าจาก config)"""
+    worker_count = 10
+    if not os.path.exists(ACCOUNTS_FILE):
+        print(f"❌ '{ACCOUNTS_FILE}' not found. Please create it and add usernames.")
+        return
+
+    with open(ACCOUNTS_FILE, "r", encoding="utf-8") as f:
+        usernames = [line.strip() for line in f if line.strip()]
+
+    total_accounts = len(usernames)
+    if total_accounts == 0:
+        print("--- [Fixed10 Mode] No accounts in accounts.txt ---")
+        return
+
+    import threading
+    ok_count = fail_count = processed = 0
+    idx = 0
+    lock = threading.Lock()
+
+    while idx < total_accounts:
+        batch = usernames[idx: idx+worker_count]
+        print(f"--- [Fixed10] Starting batch {idx//worker_count + 1}: {len(batch)} accounts ---")
+
+        threads = []
+        def task(user):
+            nonlocal ok_count, fail_count, processed
+            password = generate_password()
+            print(f"[Fixed10] ▶️ {user}")
+            result = create_roblox_account(user, password, config)
+            with lock:
+                processed += 1
+                if result.get('status') == 'success':
+                    ok_count += 1
+                    log_success(result['username'], result['password'], result['cookies'])
+                else:
+                    fail_count += 1
+
+        for u in batch:
+            t = threading.Thread(target=task, args=(u,), daemon=True)
+            t.start()
+            threads.append(t)
+        for t in threads:
+            t.join()
+
+        idx += len(batch)
+
+        if idx < total_accounts:
+            print("[Fixed10] Batch completed. Rebooting router before next batch...")
+            reboot_router_via_ssh(config)
+
+    # clear accounts file
+    try:
+        with open(ACCOUNTS_FILE, "w", encoding="utf-8") as f:
+            pass
+    except Exception:
+        pass
+
+    print("\n=== FIXED10 SUMMARY ===")
+    print(f"Total: {total_accounts} | Success: {ok_count} | Failed: {fail_count}")
+
+def run_fixed10_interactive_mode(config):
+    """Interactive Fixed10: ให้ผู้ใช้ใส่ prefix + จำนวน แล้วสมัครเป็นชุด ชุดละ 10 จอ รีบูตหลังแต่ละชุด"""
+    worker_count = 10  # เปิดพร้อมกัน 10 จอเสมอ
+
+    prefix = input("Please enter the username prefix (e.g., gml_): ").strip()
+    if not prefix:
+        print("❌ Prefix cannot be empty. Exiting mode.")
+        return
+
+    # จำนวนที่ต้องการสร้าง
+    while True:
+        try:
+            total_qty = int(input("How many accounts to create? (Max 200): ").strip())
+            if 1 <= total_qty <= 200:
+                break
+            else:
+                print("❌ Enter number between 1 and 200.")
+        except ValueError:
+            print("❌ Invalid number. Try again.")
+
+    # สร้างเลขไม่ซ้ำให้ username
+    possible_numbers = list(range(1000, 10000))
+    random.shuffle(possible_numbers)
+    numbers_to_use = possible_numbers[:total_qty]
+    usernames = [f"{prefix}{n}" for n in numbers_to_use]
+
+    import threading
+    ok_count = fail_count = processed = 0
+    idx = 0
+    lock = threading.Lock()
+
+    print(f"--- [Fixed10 Interactive] Starting with {total_qty} accounts, batches of 10 ---")
+
+    while idx < total_qty:
+        batch = usernames[idx: idx + worker_count]
+        threads = []
+
+        def task(user):
+            nonlocal ok_count, fail_count, processed
+            password = generate_password()
+            print(f"[Fixed10] ▶️ {user}")
+            result = create_roblox_account(user, password, config)
+            with lock:
+                processed += 1
+                if result.get('status') == 'success':
+                    ok_count += 1
+                    log_success(result['username'], result['password'], result['cookies'])
+                else:
+                    fail_count += 1
+
+        for u in batch:
+            t = threading.Thread(target=task, args=(u,), daemon=True)
+            t.start()
+            threads.append(t)
+        # --- NEW: wait for all threads but respect GLOBAL_TIMEOUT_SEC ---
+        global_timeout = int(config.get('GLOBAL_TIMEOUT_SEC', 600))
+        start_wait = time.time()
+        while True:
+            alive = [t for t in threads if t.is_alive()]
+            if not alive:
+                break  # ทุก thread เสร็จสิ้น
+            if time.time() - start_wait > global_timeout:
+                print(f"⚠️ GLOBAL TIMEOUT {global_timeout}s reached. Killing Chrome & rebooting...")
+                kill_all_chrome_processes()
+                prev_ip = get_public_ip()
+                reboot_router_via_ssh(config)
+                wait_for_ip_change(prev_ip, timeout=int(config.get('INTERNET_CHECK_TIMEOUT', 300)))
+                # เริ่ม batch นี้ใหม่
+                break
+            time.sleep(3)
+        # หากยังมี thread ค้าง (จาก timeout) ให้ทำซ้ำ batch เดิม
+        if any(t.is_alive() for t in threads):
+            continue
+        # --- END NEW ---
+
+        idx += len(batch)
+        print(f"--- Batch completed ({idx}/{total_qty}) ---")
+
+        if idx < total_qty:
+            print("[Fixed10] Rebooting router before next batch...")
+            reboot_router_via_ssh(config)
+
+    print("\n=== FIXED10 INTERACTIVE SUMMARY ===")
+    print(f"Total: {total_qty} | Success: {ok_count} | Failed: {fail_count}")
+
+def kill_all_chrome_processes():
+    """ปิด Chrome และ Chromedriver ทั้งหมดในระบบ (ใช้ pkill)"""
+    try:
+        import subprocess
+        subprocess.call("pkill -f chromedriver || true", shell=True)
+        subprocess.call("pkill -f chrome || true", shell=True)
+        print("[System] All Chrome/Chromedriver processes killed.")
+    except Exception as e:
+        print(f"⚠️ Could not kill chrome processes: {e}")
+
+def get_public_ip():
+    """ดึง IP สาธารณะปัจจุบัน ถ้าเชื่อมต่อไม่ได้คืน None"""
+    try:
+        resp = requests.get("https://api.ipify.org", timeout=5)
+        return resp.text.strip()
+    except Exception:
+        return None
+
+def wait_for_ip_change(prev_ip: str, timeout: int = 300, interval: int = 10):
+    """รอจนกว่าจะได้ IP ใหม่หรือหมดเวลา"""
+    import time
+    start = time.time()
+    while time.time() - start < timeout:
+        curr_ip = get_public_ip()
+        if curr_ip and curr_ip != prev_ip:
+            print(f"[Network] New IP detected: {curr_ip}")
+            return curr_ip
+        print("[Network] Waiting for IP change and connectivity...")
+        time.sleep(interval)
+    print("⚠️ [Network] Timeout waiting for new IP. Continuing anyway.")
+    return None
+
 if __name__ == "__main__":
     config = load_config()
     if not config:
@@ -1153,10 +1718,16 @@ if __name__ == "__main__":
         print("  1: Register from file")
         print("  2: Log in & Update Cookie")
         print("  3: Interactive Register")
+        print("  4: Parallel Register")
+        print("  5: Interactive Parallel Register")
+        print("  6: Batch Parallel Register")
+        print("  7: Custom Parallel Register")
+        print("  8: Fixed10 Mode")
+        print("  9: Fixed10 Interactive Mode")
         print("  q: Exit program")
         print("="*40)
         
-        choice = input("Select mode (1/2/3/q): ").strip()
+        choice = input("Select mode (1/2/3/4/5/6/7/8/9/q): ").strip()
         
         if choice == '1':
             run_registration_mode(config)
@@ -1167,6 +1738,24 @@ if __name__ == "__main__":
         elif choice == '3':
             run_interactive_registration_mode(config) 
             break    
+        elif choice == '4':
+            run_parallel_registration_mode(config)
+            break
+        elif choice == '5':
+            run_parallel_interactive_registration_mode(config)
+            break
+        elif choice == '6':
+            run_parallel_batch_registration_mode(config)
+            break
+        elif choice == '7':
+            run_parallel_custom_names_mode(config)
+            break
+        elif choice == '8':
+            run_parallel_fixed10_mode(config)
+            break
+        elif choice == '9':
+            run_fixed10_interactive_mode(config)
+            break
         elif choice.lower() == 'q':
             print("Exiting program.")
             break
