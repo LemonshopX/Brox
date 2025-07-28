@@ -232,7 +232,7 @@ def load_config():
             f.write("\nROUTER_SSH_PASSWORD=yourpassword")
             f.write("\nROUTER_SSH_KEY_PATH=")
             f.write("\nSSH_REBOOT_AFTER_N=10")
-            f.write("\nROUTER_WAIT_AFTER_REBOOT=60")
+            f.write("\nROUTER_WAIT_AFTER_REBOOT=100")
             f.write("\nPARALLEL_WORKERS=5")
 
 
@@ -1527,6 +1527,67 @@ def run_parallel_custom_names_mode(config):
     print("="*20)
     print("--- Custom Parallel finished ---")
 
+def run_parallel_fixed10_mode(config):
+    """โหมดใหม่: เปิดพร้อมกัน 10 จอ สมัครให้ครบ 10 ไอดีแล้วรีบูต รอ 100 วิ (หรือค่าจาก config)"""
+    worker_count = 10
+    if not os.path.exists(ACCOUNTS_FILE):
+        print(f"❌ '{ACCOUNTS_FILE}' not found. Please create it and add usernames.")
+        return
+
+    with open(ACCOUNTS_FILE, "r", encoding="utf-8") as f:
+        usernames = [line.strip() for line in f if line.strip()]
+
+    total_accounts = len(usernames)
+    if total_accounts == 0:
+        print("--- [Fixed10 Mode] No accounts in accounts.txt ---")
+        return
+
+    import threading
+    ok_count = fail_count = processed = 0
+    idx = 0
+    lock = threading.Lock()
+
+    while idx < total_accounts:
+        batch = usernames[idx: idx+worker_count]
+        print(f"--- [Fixed10] Starting batch {idx//worker_count + 1}: {len(batch)} accounts ---")
+
+        threads = []
+        def task(user):
+            nonlocal ok_count, fail_count, processed
+            password = generate_password()
+            print(f"[Fixed10] ▶️ {user}")
+            result = create_roblox_account(user, password, config)
+            with lock:
+                processed += 1
+                if result.get('status') == 'success':
+                    ok_count += 1
+                    log_success(result['username'], result['password'], result['cookies'])
+                else:
+                    fail_count += 1
+
+        for u in batch:
+            t = threading.Thread(target=task, args=(u,), daemon=True)
+            t.start()
+            threads.append(t)
+        for t in threads:
+            t.join()
+
+        idx += len(batch)
+
+        if idx < total_accounts:
+            print("[Fixed10] Batch completed. Rebooting router before next batch...")
+            reboot_router_via_ssh(config)
+
+    # clear accounts file
+    try:
+        with open(ACCOUNTS_FILE, "w", encoding="utf-8") as f:
+            pass
+    except Exception:
+        pass
+
+    print("\n=== FIXED10 SUMMARY ===")
+    print(f"Total: {total_accounts} | Success: {ok_count} | Failed: {fail_count}")
+
 if __name__ == "__main__":
     config = load_config()
     if not config:
@@ -1541,10 +1602,11 @@ if __name__ == "__main__":
         print("  5: Interactive Parallel Register")
         print("  6: Batch Parallel Register")
         print("  7: Custom Parallel Register")
+        print("  8: Fixed10 Mode")
         print("  q: Exit program")
         print("="*40)
         
-        choice = input("Select mode (1/2/3/4/5/6/7/q): ").strip()
+        choice = input("Select mode (1/2/3/4/5/6/7/8/q): ").strip()
         
         if choice == '1':
             run_registration_mode(config)
@@ -1566,6 +1628,9 @@ if __name__ == "__main__":
             break
         elif choice == '7':
             run_parallel_custom_names_mode(config)
+            break
+        elif choice == '8':
+            run_parallel_fixed10_mode(config)
             break
         elif choice.lower() == 'q':
             print("Exiting program.")
