@@ -435,9 +435,40 @@ def purchase_random_item(driver, username, config):
         time.sleep(2) # รอให้หน้าต่างปิดไป
         
         print(f"[{username}] ...Successfully purchased item.")
+        # แต่งตัวด้วยไอเท็มที่เพิ่งซื้อ
+        wear_last_purchased_item(driver, username, item_to_buy_url)
 
     except Exception as e:
         print(f"[{username}] ...⚠️ Could not purchase item. (Already owned? Not for sale? Error: {e})")
+def wear_last_purchased_item(driver, username, item_url):
+    """ฟังก์ชันสำหรับแต่งตัวด้วยไอเท็มที่เพิ่งซื้อ (item_url)"""
+    try:
+        print(f"[{username}] ...Attempting to wear the purchased item...")
+        # ไปที่หน้า Avatar
+        driver.get("https://www.roblox.com/my/avatar")
+        time.sleep(5)  # รอหน้า avatar โหลด
+
+        # ดึง itemId จาก URL
+        import re
+        match = re.search(r'/catalog/(\\d+)', item_url)
+        if not match:
+            print(f"[{username}] ...Could not extract itemId from URL: {item_url}")
+            return
+        item_id = match.group(1)
+
+        # หาไอเท็มใน inventory (โดยใช้ data-item-id)
+        try:
+            item_selector = f"div[data-item-id='{item_id}'] button[aria-label='Wear']"
+            wear_button = WebDriverWait(driver, 15).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, item_selector))
+            )
+            wear_button.click()
+            print(f"[{username}] ...Clicked 'Wear' for item {item_id}.")
+            time.sleep(2)
+        except Exception:
+            print(f"[{username}] ...Could not find or click 'Wear' button for item {item_id} (may already be equipped or not found on avatar page).")
+    except Exception as e:
+        print(f"[{username}] ...⚠️ Error in wear_last_purchased_item: {e}")
 def create_roblox_account(username, password, config):
     """ฟังก์ชันสำหรับสมัครบัญชี พร้อมระบบสุ่มชื่อใหม่เมื่อซ้ำ"""
     chrome_options = Options()
